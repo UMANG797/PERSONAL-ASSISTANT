@@ -1,10 +1,11 @@
 import { Router, Request, Response } from "express";
-import { BedrockRuntimeClient, InvokeModelCommand } from "@aws-sdk/client-bedrock-runtime";
+import { BedrockRuntimeClient, InvokeModelCommand, ConverseCommand } from "@aws-sdk/client-bedrock-runtime";
 import { DocumentModel } from "./documents";
+import { NoteModel } from "./notes";
 import { validateJwt, requireMultiTenancy } from "../middleware/auth";
 
 const router = Router();
-const bedrockClient = new BedrockRuntimeClient({ region: process.env.AWS_REGION || "us-east-1" });
+const bedrockClient = new BedrockRuntimeClient({ region: "us-east-1" });
 
 router.post("/chat", validateJwt, requireMultiTenancy, async (req: Request, res: Response) => {
   const { query } = req.body;
@@ -20,7 +21,7 @@ router.post("/chat", validateJwt, requireMultiTenancy, async (req: Request, res:
     };
 
     const bedrockTitanCommand = new InvokeModelCommand({
-      modelId: "amazon.titan-embed-text-v1",
+      modelId: "amazon.titan-embed-text-v2:0",
       contentType: "application/json",
       accept: "application/json",
       body: JSON.stringify(titanPayload),
@@ -31,39 +32,86 @@ router.post("/chat", validateJwt, requireMultiTenancy, async (req: Request, res:
     const queryVector = titanResult.embedding;
 
     // 2. Query MongoDB Atlas using native $vectorSearch matching tenant criteria
-    // Atlas Vector search requires a defined index (e.g. "vector_index") mapping the embedding field.
-    const searchResults = await DocumentModel.aggregate([
-      {
-        $vectorSearch: {
-          index: "vector_index",
-          path: "embedding",
-          queryVector: queryVector,
-          numCandidates: 10,
-          limit: 3,
+    let searchResults = [];
+    try {
+      searchResults = await DocumentModel.aggregate([
+        {
+          $vectorSearch: {
+            index: "vector_index",
+            path: "embedding",
+            queryVector: queryVector,
+            numCandidates: 10,
+            limit: 3,
+          },
         },
-      },
-      // Strict Security Isolation check for multi-tenant isolation
-      {
-        $match: {
-          auth0UserId: req.auth0UserId,
+        // Strict Security Isolation check for multi-tenant isolation
+        {
+          $match: {
+            auth0UserId: req.auth0UserId,
+          },
         },
-      },
-    ]);
+      ]);
+    } catch (vectorSearchErr: any) {
+      console.warn("Atlas Vector Search failed or is unconfigured for documents, falling back to loading latest documents:", vectorSearchErr.message);
+      // Fallback: Retrieve the latest 5 documents for the user as context
+      searchResults = await DocumentModel.find({
+        auth0UserId: req.auth0UserId
+      })
+      .sort({ createdAt: -1 })
+      .limit(5);
+    }
+
+    // 3. Query notes using $vectorSearch or fallback
+    let noteSearchResults = [];
+    try {
+      noteSearchResults = await NoteModel.aggregate([
+        {
+          $vectorSearch: {
+            index: "notes_vector_index",
+            path: "embedding",
+            queryVector: queryVector,
+            numCandidates: 10,
+            limit: 3,
+          },
+        },
+        {
+          $match: {
+            auth0UserId: req.auth0UserId,
+          },
+        },
+      ]);
+    } catch (vectorSearchErr: any) {
+      console.warn("Atlas Vector Search failed or is unconfigured for notes, falling back to loading latest notes:", vectorSearchErr.message);
+      // Fallback: Retrieve the latest 5 notes for the user as context
+      noteSearchResults = await NoteModel.find({
+        auth0UserId: req.auth0UserId
+      })
+      .sort({ updatedAt: -1 })
+      .limit(5);
+    }
 
     // Format matches as context for RAG prompt
-    const contextText = searchResults
-      .map((doc: any) => `[File: ${doc.originalName}, Category: ${doc.category}] OCR content: ${doc.rawOcrText}`)
+    const docContextText = searchResults
+      .map((doc: any) => `[Document File: ${doc.originalName}, Category: ${doc.category}] OCR content: ${doc.rawOcrText}`)
       .join("\n\n");
 
-    // 3. Prompt Bedrock Claude to synthesize a highly accessible, clear, direct response
+    const noteContextText = noteSearchResults
+      .map((note: any) => `[Note Title: ${note.title}] Content: ${note.rawText}`)
+      .join("\n\n");
+
+    const contextText = [docContextText, noteContextText].filter(Boolean).join("\n\n");
+
+    // 4. Prompt Bedrock Claude to synthesize a highly accessible, clear, direct response
     const promptMessage = `
 You are the voice assistant for the Family Vault digital locker.
 Your user is an elderly family member. Keep sentences simple, friendly, large-font readable, and highly precise.
-Provide a conversational, easy-to-understand answer based on the secure context documents provided below.
-If the information is not found in the documents, tell the user politely and offer to record a note instead.
+Provide a conversational, easy-to-understand answer based on the secure context documents and notes provided below.
+If the information is not found in the context, tell the user politely and offer to record a note instead.
 
-[Context Documents]:
-${contextText || "No matching secure documents found."}
+If the user is asking to show, retrieve, or download a specific file (e.g., "give me the file", "show the document", "return only files", "give me this only files"), do not explain or summarize the document content. Instead, respond ONLY with a short message: "Here is your requested document:" and let the system attach the download link. Do not write any other text.
+
+[Context Documents and Notes]:
+${contextText || "No matching secure documents or notes found."}
 
 [User Query]:
 ${query}
@@ -71,40 +119,44 @@ ${query}
 Answer:
 `;
 
-    const claudePayload = {
-      anthropic_version: "bedrock-2023-05-31",
-      max_tokens: 400,
+    const converseCommand = new ConverseCommand({
+      modelId: "amazon.nova-micro-v1:0",
       messages: [
         {
           role: "user",
-          content: promptMessage,
-        },
+          content: [{ text: promptMessage }]
+        }
       ],
-    };
-
-    const bedrockClaudeCommand = new InvokeModelCommand({
-      modelId: "anthropic.claude-3-haiku-20240307-v1:0",
-      contentType: "application/json",
-      accept: "application/json",
-      body: JSON.stringify(claudePayload),
+      inferenceConfig: {
+        maxTokens: 500,
+        temperature: 0.7
+      }
     });
 
-    const bedrockClaudeResponse = await bedrockClient.send(bedrockClaudeCommand);
-    const claudeResult = JSON.parse(new TextDecoder().decode(bedrockClaudeResponse.body));
-    const assistantAnswer = claudeResult.content[0].text;
+    const converseResponse = await bedrockClient.send(converseCommand);
+    const assistantAnswer = converseResponse.output?.message?.content?.[0]?.text || "";
 
     return res.status(200).json({
       answer: assistantAnswer,
-      sources: searchResults.map((d: any) => ({
-        originalName: d.originalName,
-        category: d.category,
-        id: d._id,
-      })),
+      sources: [
+        ...searchResults.map((d: any) => ({
+          originalName: d.originalName,
+          category: d.category,
+          id: d._id,
+          type: "document"
+        })),
+        ...noteSearchResults.map((n: any) => ({
+          originalName: n.title,
+          category: "Note",
+          id: n._id,
+          type: "note"
+        }))
+      ]
     });
   } catch (err: any) {
-    // Return mock graceful recovery if AWS credentials or MongoDB Atlas search indices are unconfigured in boilerplate dev mode
+    console.error("AI Assistant error:", err);
     return res.status(200).json({
-      answer: `I received your question: "${query}". (Running in offline demo mode. Let's make sure S3 vector databases and AWS keys are configured in production).`,
+      answer: `I had trouble connecting to the AI helper (Error: ${err.message || err}). Please check your AWS settings.`,
       sources: []
     });
   }

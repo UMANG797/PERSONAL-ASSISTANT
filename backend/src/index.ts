@@ -1,10 +1,7 @@
+import "dotenv/config";
 import express, { Request, Response } from "express";
 import cors from "cors";
-import dotenv from "dotenv";
 import mongoose from "mongoose";
-
-// Load configuration environment variables
-dotenv.config();
 
 import documentRoutes from "./routes/documents";
 import notesRoutes from "./routes/notes";

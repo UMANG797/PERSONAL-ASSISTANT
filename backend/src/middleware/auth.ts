@@ -1,4 +1,4 @@
-import { auth, ClaimCheck } from "express-oauth2-jwt-bearer";
+import { auth } from "express-oauth2-jwt-bearer";
 import { Request, Response, NextFunction } from "express";
 
 // Extends Express Request type definition to include verified Auth0 claims
@@ -10,7 +10,6 @@ declare global {
   }
 }
 
-// Configures JWT validation via Auth0
 export const validateJwt = auth({
   audience: process.env.AUTH0_AUDIENCE || "https://family-vault-api/",
   issuerBaseURL: process.env.AUTH0_ISSUER_BASE_URL || "https://YOUR_AUTH0_DOMAIN.auth0.com/",

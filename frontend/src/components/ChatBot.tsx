@@ -1,13 +1,18 @@
 "use client";
 
 import React, { useState, useRef, useEffect } from "react";
-import { Mic, Send, Volume2, Square, Bot, User } from "lucide-react";
+import { Mic, Send, Volume2, Square, Bot, User, FileText } from "lucide-react";
 
 interface Message {
   id: string;
   sender: "user" | "bot";
   text: string;
   isStreaming?: boolean;
+  sources?: {
+    id: string;
+    originalName: string;
+    category: string;
+  }[];
 }
 
 export default function ChatBot() {
@@ -47,24 +52,55 @@ export default function ChatBot() {
     setIsBotTyping(true);
 
     try {
-      // Mock call to /api/ai/chat
-      const response = await fetch("/api/ai/chat", {
+      const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000/api";
+
+      // Fetch Auth0 token
+      let token = "";
+      try {
+        const tokenRes = await fetch("/api/auth/token");
+        if (tokenRes.ok) {
+          const tokenData = await tokenRes.json();
+          token = tokenData.accessToken || "";
+        }
+      } catch (err) {
+        console.warn("Could not retrieve Auth0 token for chatbot:", err);
+      }
+
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+      };
+      if (token) {
+        headers["Authorization"] = `Bearer ${token}`;
+      }
+
+      const response = await fetch(`${apiUrl}/ai/chat`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers,
         body: JSON.stringify({ query: textToSend }),
       });
 
-      // Simple simulated stream text logic
-      let botResponse = "I checked your family vault database. Your Aadhaar number is 5432-8876-0912 found in your identity upload document.";
-      if (textToSend.toLowerCase().includes("passport")) {
-        botResponse = "Your passport expires on November 15, 2029, as shown in the passport document you uploaded last month.";
+      if (!response.ok) {
+        const errText = await response.text();
+        throw new Error(errText || response.statusText);
       }
+
+      const data = await response.json();
+      let botResponse = data.answer || "I checked the database but couldn't find a clear answer.";
 
       setIsBotTyping(false);
       let currentText = "";
       const botMsgId = (Date.now() + 1).toString();
       
-      setMessages((prev) => [...prev, { id: botMsgId, sender: "bot", text: "", isStreaming: true }]);
+      setMessages((prev) => [
+        ...prev,
+        { 
+          id: botMsgId, 
+          sender: "bot", 
+          text: "", 
+          isStreaming: true,
+          sources: data.sources || []
+        }
+      ]);
 
       let index = 0;
       const interval = setInterval(() => {
@@ -80,14 +116,49 @@ export default function ChatBot() {
             prev.map((m) => (m.id === botMsgId ? { ...m, isStreaming: false } : m))
           );
         }
-      }, 20);
+      }, 10); // Sped up stream animation slightly for better UX
 
-    } catch (error) {
+    } catch (error: any) {
       setIsBotTyping(false);
       setMessages((prev) => [
         ...prev,
-        { id: Date.now().toString(), sender: "bot", text: "Sorry, I couldn't reach the database server. Please check your connection." },
+        { id: Date.now().toString(), sender: "bot", text: `Sorry, I couldn't get an answer: ${error.message || error}` },
       ]);
+    }
+  };
+
+  const handleDownloadFile = async (fileId: string) => {
+    try {
+      const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000/api";
+      
+      let token = "";
+      try {
+        const tokenRes = await fetch("/api/auth/token");
+        if (tokenRes.ok) {
+          const tokenData = await tokenRes.json();
+          token = tokenData.accessToken || "";
+        }
+      } catch (err) {
+        console.warn("Could not retrieve Auth0 token for file download:", err);
+      }
+
+      const headers: Record<string, string> = {};
+      if (token) {
+        headers["Authorization"] = `Bearer ${token}`;
+      }
+
+      const response = await fetch(`${apiUrl}/documents/download-url/${fileId}`, {
+        headers
+      });
+
+      if (!response.ok) {
+        throw new Error("Failed to retrieve file download URL.");
+      }
+
+      const { downloadUrl } = await response.json();
+      window.open(downloadUrl, "_blank");
+    } catch (err: any) {
+      alert(`Could not open file: ${err.message}`);
     }
   };
 
@@ -131,6 +202,25 @@ export default function ChatBot() {
                 </span>
                 <p className="text-xl leading-relaxed font-semibold">{msg.text}</p>
                 {msg.isStreaming && <span className="inline-block animate-pulse text-xl">⏳</span>}
+                
+                {/* Clickable Source Badges for Downloading/Previewing */}
+                {msg.sources && msg.sources.length > 0 && !msg.isStreaming && (
+                  <div className="mt-3 pt-3 border-t border-slate-200/50 space-y-2">
+                    <span className="block text-xs font-extrabold uppercase tracking-wider opacity-60 text-slate-500">Source Documents:</span>
+                    <div className="flex flex-wrap gap-2">
+                      {msg.sources.map((src) => (
+                        <button
+                          key={src.id}
+                          onClick={() => handleDownloadFile(src.id)}
+                          className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-100 hover:bg-slate-200 border-2 border-slate-350 text-slate-800 text-xs font-bold rounded-xl transition-colors shadow-sm"
+                        >
+                          <FileText className="h-3.5 w-3.5 text-blue-900" />
+                          <span>{src.originalName}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           </div>
