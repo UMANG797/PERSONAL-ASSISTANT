@@ -1,0 +1,19 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    background-color: #f8fafc;
+    color: #0f172a;
+    font-size: 1.125rem; /* Large font size by default */
+    line-height: 1.75rem;
+    font-family: ui-sans-serif, system-ui, sans-serif;
+  }
+}
+
+/* High contrast outline adjustments for accessibility */
+.btn-accessible:focus-visible {
+  outline: 4px solid #1d4ed8;
+  outline-offset: 2px;
+}
