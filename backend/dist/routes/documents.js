@@ -57,7 +57,8 @@ const DocumentSchema = new mongoose_1.Schema({
     rawOcrText: { type: String },
     category: { type: String, enum: ["Identity", "Finance", "Medical", "Other"], default: "Other" },
     structuredMetadata: { type: mongoose_1.Schema.Types.Mixed, default: {} },
-    embedding: { type: [Number], required: true }, // For Atlas Vector Search Indexing
+    embedding: { type: [Number] }, // Optional: For Atlas Vector Search Indexing
+    scanned: { type: Boolean, default: true },
     folderId: { type: mongoose_1.Schema.Types.ObjectId, ref: "Folder", default: null, index: true },
     createdAt: { type: Date, default: Date.now }
 });
@@ -88,66 +89,72 @@ router.get("/upload-url", auth_1.validateJwt, auth_1.requireMultiTenancy, async 
 });
 // 2. AWS Textract OCR & Claude parsing endpoint
 router.post("/process", auth_1.validateJwt, auth_1.requireMultiTenancy, async (req, res) => {
-    const { s3Key, originalName, folderId } = req.body;
+    const { s3Key, originalName, folderId, scan } = req.body;
     if (!s3Key) {
         return res.status(400).json({ error: "s3Key is required to process the file." });
     }
+    // Determine if we should perform OCR & AI scanning (default is true if not specified)
+    const shouldScan = scan !== false;
     try {
-        // A. Detect Document Text via AWS Textract
-        const textractCommand = new client_textract_1.DetectDocumentTextCommand({
-            Document: {
-                S3Object: {
-                    Bucket: process.env.AWS_S3_BUCKET_NAME || "family-vault-bucket",
-                    Name: s3Key,
-                },
-            },
-        });
-        const textractResponse = await textractClient.send(textractCommand);
-        const rawText = (textractResponse.Blocks || [])
-            .filter((block) => block.BlockType === "LINE")
-            .map((block) => block.Text)
-            .join(" ");
-        // B. Structured Metadata Extraction via Bedrock (Amazon Nova Micro)
-        const novaPrompt = `Extract key details from this document text. Identify the Category (choose only from: Identity, Finance, Medical, Other). Extrapolate any ID numbers (like Aadhaar, PAN, Passport numbers) and Expiry Dates. Return ONLY a valid JSON object structure like: {"category": "Identity", "extractedFields": {"idNumber": "1234-5678-9012", "expiryDate": "2029-12-31"}}. Text:\n\n${rawText}`;
-        const converseCommand = new client_bedrock_runtime_1.ConverseCommand({
-            modelId: "amazon.nova-micro-v1:0",
-            messages: [
-                {
-                    role: "user",
-                    content: [{ text: novaPrompt }]
-                }
-            ],
-            inferenceConfig: {
-                maxTokens: 500,
-                temperature: 0
-            }
-        });
-        const converseResponse = await bedrockClient.send(converseCommand);
-        const rawOutputText = converseResponse.output?.message?.content?.[0]?.text || "";
+        let rawText = "";
         let extractedData = { category: "Other", extractedFields: {} };
-        try {
-            const jsonStart = rawOutputText.indexOf("{");
-            const jsonEnd = rawOutputText.lastIndexOf("}");
-            if (jsonStart !== -1 && jsonEnd !== -1) {
-                extractedData = JSON.parse(rawOutputText.substring(jsonStart, jsonEnd + 1));
+        let embedding = [];
+        if (shouldScan) {
+            // A. Detect Document Text via AWS Textract
+            const textractCommand = new client_textract_1.DetectDocumentTextCommand({
+                Document: {
+                    S3Object: {
+                        Bucket: process.env.AWS_S3_BUCKET_NAME || "family-vault-bucket",
+                        Name: s3Key,
+                    },
+                },
+            });
+            const textractResponse = await textractClient.send(textractCommand);
+            rawText = (textractResponse.Blocks || [])
+                .filter((block) => block.BlockType === "LINE")
+                .map((block) => block.Text)
+                .join(" ");
+            // B. Structured Metadata Extraction via Bedrock (Amazon Nova Micro)
+            const novaPrompt = `Extract key details from this document text. Identify the Category (choose only from: Identity, Finance, Medical, Other). Extrapolate any ID numbers (like Aadhaar, PAN, Passport numbers) and Expiry Dates. Return ONLY a valid JSON object structure like: {"category": "Identity", "extractedFields": {"idNumber": "1234-5678-9012", "expiryDate": "2029-12-31"}}. Text:\n\n${rawText}`;
+            const converseCommand = new client_bedrock_runtime_1.ConverseCommand({
+                modelId: "amazon.nova-micro-v1:0",
+                messages: [
+                    {
+                        role: "user",
+                        content: [{ text: novaPrompt }]
+                    }
+                ],
+                inferenceConfig: {
+                    maxTokens: 500,
+                    temperature: 0
+                }
+            });
+            const converseResponse = await bedrockClient.send(converseCommand);
+            const rawOutputText = converseResponse.output?.message?.content?.[0]?.text || "";
+            try {
+                const jsonStart = rawOutputText.indexOf("{");
+                const jsonEnd = rawOutputText.lastIndexOf("}");
+                if (jsonStart !== -1 && jsonEnd !== -1) {
+                    extractedData = JSON.parse(rawOutputText.substring(jsonStart, jsonEnd + 1));
+                }
             }
+            catch (e) {
+                console.warn("Failed to parse JSON from Nova response:", e);
+            }
+            // C. Vector Embeddings Generation via Titan
+            const titanPayload = {
+                inputText: rawText || "Empty document",
+            };
+            const bedrockTitanCommand = new client_bedrock_runtime_1.InvokeModelCommand({
+                modelId: "amazon.titan-embed-text-v2:0",
+                contentType: "application/json",
+                accept: "application/json",
+                body: JSON.stringify(titanPayload),
+            });
+            const bedrockTitanResponse = await bedrockClient.send(bedrockTitanCommand);
+            const titanResult = JSON.parse(new TextDecoder().decode(bedrockTitanResponse.body));
+            embedding = titanResult.embedding;
         }
-        catch (e) {
-            console.warn("Failed to parse JSON from Nova response:", e);
-        }
-        // C. Vector Embeddings Generation via Titan
-        const titanPayload = {
-            inputText: rawText || "Empty document",
-        };
-        const bedrockTitanCommand = new client_bedrock_runtime_1.InvokeModelCommand({
-            modelId: "amazon.titan-embed-text-v2:0",
-            contentType: "application/json",
-            accept: "application/json",
-            body: JSON.stringify(titanPayload),
-        });
-        const bedrockTitanResponse = await bedrockClient.send(bedrockTitanCommand);
-        const titanResult = JSON.parse(new TextDecoder().decode(bedrockTitanResponse.body));
-        const embedding = titanResult.embedding;
         // D. Persist structured record and vectors inside MongoDB Atlas
         const newDoc = new DocumentModel({
             auth0UserId: req.auth0UserId,
@@ -156,16 +163,18 @@ router.post("/process", auth_1.validateJwt, auth_1.requireMultiTenancy, async (r
             rawOcrText: rawText,
             category: extractedData.category || "Other",
             structuredMetadata: extractedData.extractedFields || {},
-            embedding,
+            embedding: shouldScan ? embedding : undefined,
+            scanned: shouldScan,
             folderId: folderId || null,
         });
         await newDoc.save();
         return res.status(200).json({
-            message: "Document processed and indexed successfully",
+            message: shouldScan ? "Document processed and indexed successfully" : "Document saved successfully (skipped scanning)",
             document: {
                 id: newDoc._id,
                 category: newDoc.category,
                 structuredMetadata: newDoc.structuredMetadata,
+                scanned: newDoc.scanned,
             },
         });
     }

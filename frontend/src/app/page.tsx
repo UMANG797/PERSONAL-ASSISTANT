@@ -1,6 +1,10 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
+import { useAuth } from "./components/AuthContext";
+import { useEditor, EditorContent } from "@tiptap/react";
+import StarterKit from "@tiptap/starter-kit";
+import Highlight from "@tiptap/extension-highlight";
 import { 
   Upload, 
   FileText, 
@@ -17,9 +21,23 @@ import {
   Edit2, 
   Check, 
   X, 
-  ChevronRight 
+  ChevronRight,
+  MoreVertical,
+  Plus,
+  Bold,
+  Italic,
+  List,
+  Highlighter,
+  Save,
+  Menu,
+  ChevronLeft,
+  Bot,
+  LogOut,
+  Send,
+  Square,
+  Search
 } from "lucide-react";
-import { useUser } from "@auth0/nextjs-auth0/client";
+import ChatBot from "../components/ChatBot";
 
 interface FolderItem {
   _id: string;
@@ -33,48 +51,79 @@ interface DocumentItem {
   category: "Identity" | "Finance" | "Medical" | "Other";
   folderId: string | null;
   createdAt: string;
+  scanned?: boolean;
+}
+
+interface Note {
+  _id: string;
+  title: string;
+  content: any;
+  rawText?: string;
+  updatedAt: string;
 }
 
 export default function Dashboard() {
-  const { user, error, isLoading } = useUser();
-  const [dragActive, setDragActive] = useState(false);
-  const [uploadStatus, setUploadStatus] = useState<string | null>(null);
-  const fileInputRef = React.useRef<HTMLInputElement>(null);
+  const { user, token, logout, login: apiLogin, register: apiRegister, isLoading: authLoading } = useAuth();
+  
+  // Custom Login/Register Form States
+  const [isRegistering, setIsRegistering] = useState(false);
+  const [authUsername, setAuthUsername] = useState("");
+  const [authPassword, setAuthPassword] = useState("");
+  const [authError, setAuthError] = useState("");
+  const [authSuccess, setAuthSuccess] = useState("");
 
-  // File Manager States
+  // App-level Navigation & Sidebar States
+  const [activeTab, setActiveTab] = useState<"documents" | "notes">("documents");
+  const [isAiOpen, setIsAiOpen] = useState(false);
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+
+  // Documents & Folders States
   const [folders, setFolders] = useState<FolderItem[]>([]);
   const [documents, setDocuments] = useState<DocumentItem[]>([]);
   const [selectedFolderId, setSelectedFolderId] = useState<string | null>(null);
-  
-  // Folder Creation/Editing States
-  const [isCreatingFolder, setIsCreatingFolder] = useState(false);
-  const [newFolderName, setNewFolderName] = useState("");
-  const [editingFolderId, setEditingFolderId] = useState<string | null>(null);
-  const [editingFolderName, setEditingFolderName] = useState("");
+  const [uploadStatus, setUploadStatus] = useState<string | null>(null);
+  const [shouldScan, setShouldScan] = useState(true);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // File Editing States
-  const [editingFileId, setEditingFileId] = useState<string | null>(null);
-  const [editingFileName, setEditingFileName] = useState("");
+  // Folder Dialog Box States
+  const [isFolderModalOpen, setIsFolderModalOpen] = useState(false);
+  const [folderModalMode, setFolderModalMode] = useState<"create" | "rename">("create");
+  const [folderModalTargetId, setFolderModalTargetId] = useState<string | null>(null);
+  const [folderModalInput, setFolderModalInput] = useState("");
 
-  useEffect(() => {
-    if (user) {
-      fetchData();
-    }
-  }, [user]);
+  // File Dialog Box States
+  const [isFileModalOpen, setIsFileModalOpen] = useState(false);
+  const [fileModalTargetId, setFileModalTargetId] = useState<string | null>(null);
+  const [fileModalInput, setFileModalInput] = useState("");
 
-  const fetchData = async () => {
+  // Active Dropdown menus
+  const [activeMenuId, setActiveMenuId] = useState<string | null>(null);
+
+  // Notes States
+  const [notes, setNotes] = useState<Note[]>([]);
+  const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
+  const [noteTitle, setNoteTitle] = useState("");
+  const [noteSearchQuery, setNoteSearchQuery] = useState("");
+  const [noteSaveStatus, setNoteSaveStatus] = useState("");
+  const [isNotesSidebarOpen, setIsNotesSidebarOpen] = useState(true);
+
+  const editor = useEditor({
+    extensions: [
+      StarterKit,
+      Highlight.configure({ multicolor: true }),
+    ],
+    content: "<p>Start writing your family note here...</p>",
+  });
+
+  const activeNote = notes.find((n) => n._id === selectedNoteId);
+
+  // General Data Fetching
+  const fetchAllData = async () => {
+    if (!token) return;
     try {
-      const tokenRes = await fetch("/api/auth/token");
-      let token = "";
-      if (tokenRes.ok) {
-        const tokenData = await tokenRes.json();
-        token = tokenData.accessToken || "";
-      }
-
-      const headers: Record<string, string> = {};
-      if (token) {
-        headers["Authorization"] = `Bearer ${token}`;
-      }
+      const headers: Record<string, string> = {
+        "Authorization": `Bearer ${token}`
+      };
 
       const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000/api";
 
@@ -91,646 +140,1079 @@ export default function Dashboard() {
         const docsData = await docsRes.json();
         setDocuments(docsData);
       }
+
+      // Fetch Notes
+      const notesRes = await fetch(`${apiUrl}/notes`, { headers });
+      if (notesRes.ok) {
+        const notesData = await notesRes.json();
+        setNotes(notesData);
+      }
     } catch (err) {
-      console.error("Error fetching data:", err);
+      console.error("Error loading vault content:", err);
     }
   };
 
-  const handleCreateFolder = async (e: React.FormEvent) => {
+  useEffect(() => {
+    if (user && token) {
+      fetchAllData();
+    }
+  }, [user, token]);
+
+  // Load Note to Editor
+  useEffect(() => {
+    if (activeNote && editor) {
+      setNoteTitle(activeNote.title);
+      editor.commands.setContent(activeNote.content);
+    } else if (!selectedNoteId && editor) {
+      setNoteTitle("");
+      editor.commands.setContent("<p>Start writing your family note here...</p>");
+    }
+  }, [selectedNoteId, editor]);
+
+  // Submit Sign In / Sign Up Forms
+  const handleAuthSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newFolderName.trim()) return;
+    setAuthError("");
+    setAuthSuccess("");
+
+    if (!authUsername.trim() || !authPassword.trim()) {
+      setAuthError("All fields are required.");
+      return;
+    }
+
+    if (isRegistering) {
+      const res = await apiRegister(authUsername, authPassword);
+      if (res.success) {
+        setAuthSuccess("Registration successful! You can now log in.");
+        setIsRegistering(false);
+        setAuthPassword("");
+      } else {
+        setAuthError(res.error || "Registration failed.");
+      }
+    } else {
+      const res = await apiLogin(authUsername, authPassword);
+      if (!res.success) {
+        setAuthError(res.error || "Login failed.");
+      }
+    }
+  };
+
+  // Folder Operations
+  const handleOpenFolderModal = (mode: "create" | "rename", targetId: string | null = null, currentName = "") => {
+    setFolderModalMode(mode);
+    setFolderModalTargetId(targetId);
+    setFolderModalInput(currentName);
+    setIsFolderModalOpen(true);
+    setActiveMenuId(null);
+  };
+
+  const handleFolderModalSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!folderModalInput.trim() || !token) return;
 
     try {
-      const tokenRes = await fetch("/api/auth/token");
-      let token = "";
-      if (tokenRes.ok) {
-        const tokenData = await tokenRes.json();
-        token = tokenData.accessToken || "";
-      }
-
       const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000/api";
-      const res = await fetch(`${apiUrl}/documents/folders`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...(token ? { "Authorization": `Bearer ${token}` } : {})
-        },
-        body: JSON.stringify({ name: newFolderName })
-      });
 
-      if (res.ok) {
-        setNewFolderName("");
-        setIsCreatingFolder(false);
-        fetchData();
+      if (folderModalMode === "create") {
+        const res = await fetch(`${apiUrl}/documents/folders`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${token}`
+          },
+          body: JSON.stringify({ name: folderModalInput })
+        });
+        if (res.ok) fetchAllData();
+      } else if (folderModalMode === "rename" && folderModalTargetId) {
+        const res = await fetch(`${apiUrl}/documents/folders/${folderModalTargetId}`, {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${token}`
+          },
+          body: JSON.stringify({ name: folderModalInput })
+        });
+        if (res.ok) fetchAllData();
       }
     } catch (err) {
-      console.error("Error creating folder:", err);
+      console.error("Folder action failed:", err);
+    } finally {
+      setIsFolderModalOpen(false);
+      setFolderModalInput("");
     }
   };
 
   const handleDeleteFolder = async (folderId: string) => {
-    if (!confirm("Are you sure you want to delete this folder? Any files inside will be moved to the Root folder.")) return;
+    if (!confirm("Are you sure you want to delete this folder? Any files inside will be moved to the Root folder.") || !token) return;
+    setActiveMenuId(null);
 
     try {
-      const tokenRes = await fetch("/api/auth/token");
-      let token = "";
-      if (tokenRes.ok) {
-        const tokenData = await tokenRes.json();
-        token = tokenData.accessToken || "";
-      }
-
       const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000/api";
       const res = await fetch(`${apiUrl}/documents/folders/${folderId}`, {
         method: "DELETE",
-        headers: token ? { "Authorization": `Bearer ${token}` } : {}
+        headers: { "Authorization": `Bearer ${token}` }
       });
 
       if (res.ok) {
         if (selectedFolderId === folderId) {
           setSelectedFolderId(null);
         }
-        fetchData();
+        fetchAllData();
       }
     } catch (err) {
       console.error("Error deleting folder:", err);
     }
   };
 
-  const handleRenameFolder = async (folderId: string) => {
-    if (!editingFolderName.trim()) return;
-
-    try {
-      const tokenRes = await fetch("/api/auth/token");
-      let token = "";
-      if (tokenRes.ok) {
-        const tokenData = await tokenRes.json();
-        token = tokenData.accessToken || "";
-      }
-
-      const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000/api";
-      const res = await fetch(`${apiUrl}/documents/folders/${folderId}`, {
-        method: "PATCH",
-        headers: {
-          "Content-Type": "application/json",
-          ...(token ? { "Authorization": `Bearer ${token}` } : {})
-        },
-        body: JSON.stringify({ name: editingFolderName })
-      });
-
-      if (res.ok) {
-        setEditingFolderId(null);
-        setEditingFolderName("");
-        fetchData();
-      }
-    } catch (err) {
-      console.error("Error renaming folder:", err);
-    }
+  // File Operations
+  const handleOpenFileModal = (targetId: string, currentName: string) => {
+    setFileModalTargetId(targetId);
+    setFileModalInput(currentName);
+    setIsFileModalOpen(true);
+    setActiveMenuId(null);
   };
 
-  const handleRenameFile = async (fileId: string) => {
-    if (!editingFileName.trim()) return;
+  const handleFileModalSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!fileModalInput.trim() || !fileModalTargetId || !token) return;
 
     try {
-      const tokenRes = await fetch("/api/auth/token");
-      let token = "";
-      if (tokenRes.ok) {
-        const tokenData = await tokenRes.json();
-        token = tokenData.accessToken || "";
-      }
-
       const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000/api";
-      const res = await fetch(`${apiUrl}/documents/${fileId}`, {
+      const res = await fetch(`${apiUrl}/documents/${fileModalTargetId}`, {
         method: "PATCH",
         headers: {
           "Content-Type": "application/json",
-          ...(token ? { "Authorization": `Bearer ${token}` } : {})
+          "Authorization": `Bearer ${token}`
         },
-        body: JSON.stringify({ originalName: editingFileName })
+        body: JSON.stringify({ originalName: fileModalInput })
       });
 
       if (res.ok) {
-        setEditingFileId(null);
-        setEditingFileName("");
-        fetchData();
+        fetchAllData();
       }
     } catch (err) {
-      console.error("Error renaming file:", err);
+      console.error("Rename file failed:", err);
+    } finally {
+      setIsFileModalOpen(false);
+      setFileModalInput("");
     }
   };
 
   const handleDeleteFile = async (fileId: string) => {
-    if (!confirm("Are you sure you want to delete this file permanently?")) return;
+    if (!confirm("Are you sure you want to delete this file permanently?") || !token) return;
+    setActiveMenuId(null);
 
     try {
-      const tokenRes = await fetch("/api/auth/token");
-      let token = "";
-      if (tokenRes.ok) {
-        const tokenData = await tokenRes.json();
-        token = tokenData.accessToken || "";
-      }
-
       const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000/api";
       const res = await fetch(`${apiUrl}/documents/${fileId}`, {
         method: "DELETE",
-        headers: token ? { "Authorization": `Bearer ${token}` } : {}
+        headers: { "Authorization": `Bearer ${token}` }
       });
 
       if (res.ok) {
-        fetchData();
+        fetchAllData();
       }
     } catch (err) {
       console.error("Error deleting file:", err);
     }
   };
 
-  const handleDrag = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    if (e.type === "dragenter" || e.type === "dragover") {
-      setDragActive(true);
-    } else if (e.type === "dragleave") {
-      setDragActive(false);
+  const handleDownloadFile = async (fileId: string) => {
+    if (!token) return;
+    try {
+      const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000/api";
+      const response = await fetch(`${apiUrl}/documents/download-url/${fileId}`, {
+        headers: { "Authorization": `Bearer ${token}` }
+      });
+      if (response.ok) {
+        const { downloadUrl } = await response.json();
+        window.open(downloadUrl, "_blank");
+      }
+    } catch (err) {
+      console.error("Could not fetch download URL:", err);
     }
   };
 
-  const uploadAndProcess = async (file: File) => {
+  // Upload/Process Document File
+  const handleUploadFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!e.target.files || !e.target.files[0] || !token) return;
+    const file = e.target.files[0];
+
     setUploadStatus(`Requesting upload slot for "${file.name}"...`);
     try {
       const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000/api";
+      const headers = { "Authorization": `Bearer ${token}` };
 
-      let token = "";
-      try {
-        const tokenRes = await fetch("/api/auth/token");
-        if (tokenRes.ok) {
-          const tokenData = await tokenRes.json();
-          token = tokenData.accessToken || "";
-        }
-      } catch (err) {
-        console.warn("Could not retrieve Auth0 token, trying request without token...", err);
-      }
-
-      const headers: Record<string, string> = {
-        "Content-Type": "application/json",
-      };
-      if (token) {
-        headers["Authorization"] = `Bearer ${token}`;
-      }
-
-      // 1. Request S3 Pre-signed URL from API
       const urlRes = await fetch(`${apiUrl}/documents/upload-url?fileName=${encodeURIComponent(file.name)}`, {
         headers
       });
 
-      if (!urlRes.ok) {
-        const errText = await urlRes.text();
-        throw new Error(`Failed to get S3 slot: ${errText || urlRes.statusText}`);
-      }
-
+      if (!urlRes.ok) throw new Error("Upload slot request failed");
       const { uploadUrl, s3Key } = await urlRes.json();
 
-      // 2. Direct Binary PUT to S3 Bucket
-      setUploadStatus(`Uploading "${file.name}" to secure storage...`);
+      setUploadStatus(`Uploading "${file.name}"...`);
       const uploadRes = await fetch(uploadUrl, {
         method: "PUT",
-        headers: {
-          "Content-Type": file.type,
-        },
+        headers: { "Content-Type": file.type },
         body: file,
       });
 
-      if (!uploadRes.ok) {
-        throw new Error(`S3 secure upload failed: ${uploadRes.statusText}`);
-      }
+      if (!uploadRes.ok) throw new Error("Direct S3 upload failed");
 
-      // 3. Process with OCR Textract + Bedrock Claude + Embeddings
-      setUploadStatus(`Analyzing and securing "${file.name}"...`);
+      setUploadStatus(`Analyzing document...`);
       const processRes = await fetch(`${apiUrl}/documents/process`, {
         method: "POST",
-        headers,
-        body: JSON.stringify({ s3Key, originalName: file.name, folderId: selectedFolderId }),
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${token}`
+        },
+        body: JSON.stringify({ s3Key, originalName: file.name, folderId: selectedFolderId, scan: shouldScan }),
       });
 
-      if (!processRes.ok) {
-        const errText = await processRes.text();
-        throw new Error(`AI processing failed: ${errText || processRes.statusText}`);
+      if (processRes.ok) {
+        setUploadStatus(null);
+        fetchAllData();
+      } else {
+        throw new Error("OCR Processing failed");
       }
-
-      const processResult = await processRes.json();
-      setUploadStatus(`Success! "${file.name}" classified as "${processResult.document.category}" and securely saved.`);
-      fetchData();
-
     } catch (err: any) {
-      setUploadStatus(`Error uploading document: ${err.message}`);
+      setUploadStatus(`Upload failed: ${err.message}`);
     }
   };
 
-  const handleDrop = async (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setDragActive(false);
+  // Notes Operations
+  const handleCreateNote = async () => {
+    if (!token) return;
+    try {
+      const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000/api";
+      const res = await fetch(`${apiUrl}/notes`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          title: "New Note",
+          content: {
+            type: "doc",
+            content: [{ type: "paragraph", content: [{ type: "text", text: "Start writing..." }] }]
+          }
+        })
+      });
 
-    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
-      uploadAndProcess(e.dataTransfer.files[0]);
+      if (res.ok) {
+        const data = await res.json();
+        await fetchAllData();
+        setSelectedNoteId(data.note._id);
+        setIsNotesSidebarOpen(false);
+      }
+    } catch (err) {
+      console.error("New note failed:", err);
     }
   };
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files[0]) {
-      uploadAndProcess(e.target.files[0]);
+  const handleSaveNote = async () => {
+    if (!selectedNoteId || !editor || !token) return;
+
+    setNoteSaveStatus("Saving...");
+    try {
+      const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000/api";
+      const res = await fetch(`${apiUrl}/notes`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          id: selectedNoteId,
+          title: noteTitle.trim() || "Untitled Note",
+          content: editor.getJSON()
+        })
+      });
+
+      if (res.ok) {
+        setNoteSaveStatus("Saved");
+        setTimeout(() => setNoteSaveStatus(""), 2000);
+        fetchAllData();
+      } else {
+        setNoteSaveStatus("Error saving");
+      }
+    } catch (err) {
+      console.error("Save note failed:", err);
+      setNoteSaveStatus("Error");
     }
   };
 
-  const onButtonClick = () => {
-    fileInputRef.current?.click();
-  };
+  const handleDeleteNote = async (id: string) => {
+    if (!confirm("Are you sure you want to delete this note?") || !token) return;
 
-  const getCategoryColor = (category: string) => {
-    switch (category) {
-      case "Identity": return "bg-blue-100 text-blue-800 border-blue-200";
-      case "Finance": return "bg-emerald-100 text-emerald-800 border-emerald-200";
-      case "Medical": return "bg-rose-100 text-rose-800 border-rose-200";
-      default: return "bg-slate-100 text-slate-800 border-slate-200";
+    try {
+      const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000/api";
+      const res = await fetch(`${apiUrl}/notes/${id}`, {
+        method: "DELETE",
+        headers: { "Authorization": `Bearer ${token}` }
+      });
+
+      if (res.ok) {
+        setSelectedNoteId(null);
+        fetchAllData();
+        setIsNotesSidebarOpen(true);
+      }
+    } catch (err) {
+      console.error("Note deletion failed:", err);
     }
   };
 
-  // Filter documents belonging to the currently selected folder
-  const currentDocuments = documents.filter(doc => doc.folderId === selectedFolderId);
+  // Filtering Notes
+  const filteredNotes = notes.filter(
+    (n) =>
+      n.title.toLowerCase().includes(noteSearchQuery.toLowerCase()) ||
+      (n.rawText && n.rawText.toLowerCase().includes(noteSearchQuery.toLowerCase()))
+  );
 
-  // Get active folder name
-  const currentFolderName = selectedFolderId 
-    ? folders.find(f => f._id === selectedFolderId)?.name || "Folder"
-    : "Root";
+  // Helper date formatter
+  const formatDate = (dateStr: string) => {
+    const d = new Date(dateStr);
+    const today = new Date();
+    if (d.toDateString() === today.toDateString()) {
+      return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    }
+    return d.toLocaleDateString([], { month: "short", day: "numeric" });
+  };
 
-  // Loading State
-  if (isLoading) {
+  // Get documents inside folder
+  const folderDocuments = documents.filter(doc => doc.folderId === selectedFolderId);
+
+  // Authentication & Session Loading State
+  if (authLoading) {
     return (
-      <div className="flex flex-col items-center justify-center min-h-[60vh] space-y-4">
+      <div className="flex flex-col items-center justify-center min-h-screen bg-slate-50 space-y-4">
         <div className="w-16 h-16 border-4 border-blue-900 border-t-transparent rounded-full animate-spin"></div>
-        <p className="text-xl font-semibold text-slate-600">Verifying session...</p>
+        <p className="text-xl font-bold text-slate-600">Verifying session...</p>
       </div>
     );
   }
 
-  // Not Logged In - Show Landing/Login/Signup Page
+  // Auth: Landing Screen (Local Username and Password Forms)
   if (!user) {
     return (
-      <div className="flex flex-col items-center justify-center py-12 px-4 sm:px-6 lg:px-8">
-        <div className="max-w-md w-full space-y-8 bg-white p-10 rounded-3xl border-4 border-blue-900 shadow-2xl relative overflow-hidden">
+      <div className="min-h-screen flex flex-col justify-center items-center p-6 bg-gradient-to-tr from-slate-100 to-indigo-50/50">
+        <div className="max-w-md w-full bg-white border-4 border-blue-900 rounded-3xl p-10 shadow-2xl space-y-6 relative overflow-hidden">
           <div className="absolute top-0 right-0 w-32 h-32 bg-blue-100 rounded-full filter blur-xl -mr-10 -mt-10 opacity-70"></div>
           
           <div className="text-center relative">
             <div className="mx-auto flex items-center justify-center h-20 w-20 rounded-full bg-blue-50 border-4 border-blue-900 text-blue-900">
               <Shield className="h-10 w-10 animate-pulse" />
             </div>
-            <h2 className="mt-6 text-4xl font-extrabold text-slate-900 tracking-tight">
-              Family Vault
-            </h2>
-            <p className="mt-3 text-lg text-slate-600">
-              Your secure family locker for documents, notes, and AI assistance.
+            <h2 className="mt-4 text-3xl font-extrabold text-slate-900 tracking-tight">Family Vault</h2>
+            <p className="mt-2 text-sm text-slate-600">
+              {isRegistering 
+                ? "Register a new local account for your family vault." 
+                : "Sign in with your username and password."}
             </p>
           </div>
 
-          <div className="mt-8 space-y-4">
-            <a
-              href="/api/auth/login"
-              className="group relative w-full flex justify-center py-4 px-6 border-4 border-blue-900 text-xl font-bold rounded-2xl text-white bg-blue-900 hover:bg-blue-800 transition-all duration-150 shadow-md hover:scale-[1.02]"
-            >
-              <span className="absolute left-0 inset-y-0 flex items-center pl-3">
-                <KeyRound className="h-5 w-5 text-blue-200 group-hover:text-white" aria-hidden="true" />
-              </span>
-              Sign In
-            </a>
+          <form onSubmit={handleAuthSubmit} className="space-y-4 relative">
+            {authError && (
+              <div className="p-3 bg-red-50 border border-red-250 text-red-700 text-xs font-bold rounded-xl flex items-center gap-2">
+                <AlertCircle className="h-4 w-4 shrink-0" />
+                <span>{authError}</span>
+              </div>
+            )}
+            {authSuccess && (
+              <div className="p-3 bg-emerald-50 border border-emerald-250 text-emerald-700 text-xs font-bold rounded-xl flex items-center gap-2">
+                <Check className="h-4 w-4 shrink-0" />
+                <span>{authSuccess}</span>
+              </div>
+            )}
 
-            <a
-              href="/api/auth/signup"
-              className="group relative w-full flex justify-center py-4 px-6 border-4 border-slate-300 hover:border-blue-900 text-xl font-bold rounded-2xl text-slate-700 hover:text-blue-900 bg-white hover:bg-slate-50 transition-all duration-150 shadow-sm hover:scale-[1.02]"
-            >
-              <span className="absolute left-0 inset-y-0 flex items-center pl-3">
-                <UserPlus className="h-5 w-5 text-slate-400 group-hover:text-blue-900" aria-hidden="true" />
-              </span>
-              Create an Account
-            </a>
-          </div>
+            <div className="space-y-1">
+              <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">Username</label>
+              <input
+                type="text"
+                placeholder="E.g., dad, grandma..."
+                value={authUsername}
+                onChange={(e) => setAuthUsername(e.target.value)}
+                className="w-full px-4 py-2.5 border-2 border-slate-200 focus:border-blue-900 rounded-xl text-base outline-none font-medium"
+              />
+            </div>
 
-          <div className="pt-4 border-t-2 border-slate-100 text-center">
-            <p className="text-sm text-slate-500">
-              Protected by enterprise-grade end-to-end security.
-            </p>
+            <div className="space-y-1">
+              <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">Password</label>
+              <input
+                type="password"
+                placeholder="••••••••"
+                value={authPassword}
+                onChange={(e) => setAuthPassword(e.target.value)}
+                className="w-full px-4 py-2.5 border-2 border-slate-200 focus:border-blue-900 rounded-xl text-base outline-none font-medium"
+              />
+            </div>
+
+            <button
+              type="submit"
+              className="w-full py-3 bg-blue-900 hover:bg-blue-800 text-white font-bold text-lg rounded-xl transition-all shadow-md mt-4 hover:scale-[1.01]"
+            >
+              {isRegistering ? "Register Account" : "Sign In"}
+            </button>
+          </form>
+
+          <div className="text-center pt-2">
+            <button
+              onClick={() => {
+                setIsRegistering(!isRegistering);
+                setAuthError("");
+                setAuthSuccess("");
+                setAuthUsername("");
+                setAuthPassword("");
+              }}
+              className="text-sm font-bold text-blue-900 hover:underline"
+            >
+              {isRegistering 
+                ? "Already have an account? Sign In" 
+                : "Don't have an account? Create one"}
+            </button>
           </div>
         </div>
       </div>
     );
   }
 
-  // Logged In - Dashboard / File Manager
   return (
-    <div className="space-y-8 py-6">
-      {/* Welcome Banner */}
-      <section className="bg-gradient-to-r from-blue-900 to-indigo-900 text-white rounded-3xl p-8 shadow-xl">
-        <h1 className="text-3xl sm:text-4xl font-black mb-2">Hello {user.name || "Family Member"}, Welcome back!</h1>
-        <p className="text-lg sm:text-xl text-blue-100 font-medium">
-          Access and organize your critical secure records and family notes.
-        </p>
-      </section>
+    <div className="min-h-screen flex flex-col bg-slate-50 relative select-none">
+      
+      {/* 1. Header (Navbar) */}
+      <header className="bg-white border-b-4 border-blue-900 shadow-md sticky top-0 z-40 h-[76px] flex items-center">
+        <div className="w-full px-6 flex items-center justify-between">
+          {/* Logo on Left */}
+          <div className="flex items-center space-x-3">
+            <span className="text-2xl sm:text-3xl font-extrabold text-blue-900 tracking-tight cursor-pointer" onClick={() => { setSelectedFolderId(null); setActiveTab("documents"); setIsAiOpen(false); }}>
+              🔒 Family Vault
+            </span>
+          </div>
 
-      {/* RAG Chat & Notebook Quick Links */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        <a
-          href="/chat"
-          className="flex items-center space-x-6 bg-emerald-50 hover:bg-emerald-100 border-2 border-emerald-500 rounded-2xl p-6 shadow-sm transition-all duration-200 transform hover:scale-[1.01]"
-        >
-          <div className="p-3 bg-emerald-600 rounded-full text-white">
-            <Mic className="h-8 w-8" />
-          </div>
-          <div>
-            <h2 className="text-xl font-bold text-slate-800">Talk to AI Assistant</h2>
-            <p className="text-sm text-slate-600 font-medium">Ask questions to your vault via voice or text.</p>
-          </div>
-        </a>
+          {/* Desktop Navigation & Auth on Right */}
+          <nav className="hidden md:flex items-center space-x-6">
+            <button 
+              onClick={() => { setActiveTab("documents"); setSelectedNoteId(null); setIsAiOpen(false); }}
+              className={`text-lg font-bold px-4 py-2 rounded-xl transition-all duration-150 ${
+                activeTab === "documents" && !isAiOpen ? "bg-blue-900 text-white shadow-md" : "text-slate-600 hover:text-blue-900 hover:bg-slate-100"
+              }`}
+            >
+              Documents
+            </button>
+            <button 
+              onClick={() => { setActiveTab("notes"); setSelectedFolderId(null); setIsAiOpen(false); }}
+              className={`text-lg font-bold px-4 py-2 rounded-xl transition-all duration-150 ${
+                activeTab === "notes" && !isAiOpen ? "bg-blue-900 text-white shadow-md" : "text-slate-600 hover:text-blue-900 hover:bg-slate-100"
+              }`}
+            >
+              Notes
+            </button>
+            
+            <div className="flex items-center space-x-4 border-l pl-6 border-slate-200">
+              <span className="text-sm font-bold text-blue-900 max-w-[150px] truncate capitalize">
+                👋 {user.username}
+              </span>
+              <button
+                onClick={logout}
+                className="flex items-center space-x-2 text-sm font-bold text-red-600 hover:text-red-800 border-2 border-red-200 hover:border-red-600 px-3.5 py-1.5 rounded-xl transition-all duration-150"
+              >
+                <LogOut className="h-4 w-4" />
+                <span>Sign Out</span>
+              </button>
+            </div>
+          </nav>
 
-        <a
-          href="/notes"
-          className="flex items-center space-x-6 bg-amber-50 hover:bg-amber-100 border-2 border-amber-500 rounded-2xl p-6 shadow-sm transition-all duration-200 transform hover:scale-[1.01]"
-        >
-          <div className="p-3 bg-amber-500 rounded-full text-white">
-            <BookOpen className="h-8 w-8" />
-          </div>
-          <div>
-            <h2 className="text-xl font-bold text-slate-800">Family Notebook</h2>
-            <p className="text-sm text-slate-600 font-medium">Read notes and record important information.</p>
-          </div>
-        </a>
-      </div>
+          {/* Mobile Menu Button */}
+          <button 
+            className="md:hidden p-2.5 rounded-xl bg-slate-100 text-slate-800 hover:bg-slate-200 transition-colors"
+            onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
+          >
+            <Menu className="h-6 w-6" />
+          </button>
+        </div>
 
-      {/* Main Professional File Explorer Section */}
-      <div className="bg-white border-2 border-slate-200 rounded-3xl overflow-hidden shadow-sm grid grid-cols-1 lg:grid-cols-12 min-h-[500px]">
+        {/* Mobile Navigation Drawer */}
+        {isMobileMenuOpen && (
+          <div className="absolute top-[76px] left-0 right-0 md:hidden border-t border-slate-150 bg-white p-4 space-y-3 flex flex-col shadow-lg z-50">
+            <button 
+              onClick={() => { setActiveTab("documents"); setIsMobileMenuOpen(false); setSelectedNoteId(null); setIsAiOpen(false); }}
+              className={`w-full text-left text-lg font-bold px-4 py-2.5 rounded-xl ${
+                activeTab === "documents" && !isAiOpen ? "bg-blue-900 text-white" : "text-slate-700 hover:bg-slate-100"
+              }`}
+            >
+              Documents
+            </button>
+            <button 
+              onClick={() => { setActiveTab("notes"); setIsMobileMenuOpen(false); setSelectedFolderId(null); setIsAiOpen(false); }}
+              className={`w-full text-left text-lg font-bold px-4 py-2.5 rounded-xl ${
+                activeTab === "notes" && !isAiOpen ? "bg-blue-900 text-white" : "text-slate-700 hover:bg-slate-100"
+              }`}
+            >
+              Notes
+            </button>
+            <div className="border-t pt-3 flex items-center justify-between">
+              <span className="text-sm font-bold text-blue-900 capitalize">👋 {user.username}</span>
+              <button
+                onClick={() => { logout(); setIsMobileMenuOpen(false); }}
+                className="flex items-center space-x-1.5 text-sm font-bold text-red-600 border border-red-200 px-3 py-1.5 rounded-xl"
+              >
+                <LogOut className="h-4 w-4" />
+                <span>Sign Out</span>
+              </button>
+            </div>
+          </div>
+        )}
+      </header>
+
+      {/* 2. Main Tab View Workspaces (Full bleed covering all space below navbar) */}
+      <main className="flex-1 flex flex-col w-full h-[calc(100vh-76px)] overflow-hidden relative">
         
-        {/* Left Sidebar - Folders */}
-        <div className="lg:col-span-4 border-r-2 border-slate-200 bg-slate-50 p-6 flex flex-col justify-between">
-          <div className="space-y-6">
-            <div className="flex items-center justify-between">
-              <h3 className="text-xl font-bold text-slate-800 flex items-center gap-2">
-                <Folder className="h-5 w-5 text-blue-900" />
-                Folders
-              </h3>
-              {!isCreatingFolder && (
-                <button
-                  onClick={() => setIsCreatingFolder(true)}
-                  className="p-2 text-blue-900 hover:bg-blue-100 rounded-xl transition-all duration-150 flex items-center justify-center border-2 border-blue-900"
-                  title="Create Folder"
+        {/* TAB: Documents (Microsoft OneDrive style folder/file viewer) */}
+        {!isAiOpen && activeTab === "documents" && (
+          <div className="flex-1 flex flex-col bg-white border-t border-slate-200 p-6 overflow-hidden h-full">
+            {/* Documents Action Bar */}
+            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 border-b pb-4">
+              {/* Breadcrumb Navigation */}
+              <div className="flex items-center space-x-2 text-slate-500 font-semibold text-sm sm:text-base">
+                <button 
+                  onClick={() => setSelectedFolderId(null)}
+                  className="hover:text-blue-900 hover:underline"
                 >
-                  <FolderPlus className="h-5 w-5" />
+                  Root Folders
                 </button>
-              )}
+                {selectedFolderId && (
+                  <>
+                    <ChevronRight className="h-4 w-4 text-slate-400" />
+                    <span className="text-slate-900 max-w-[150px] truncate">
+                      {folders.find(f => f._id === selectedFolderId)?.name || "Folder"}
+                    </span>
+                  </>
+                )}
+              </div>
+
+              {/* Action Buttons */}
+              <div className="flex flex-wrap items-center gap-3">
+                {selectedFolderId && (
+                  <label className="flex items-center gap-2 cursor-pointer bg-slate-50 border border-slate-200 px-3 py-2 rounded-xl text-xs font-bold text-slate-700 hover:bg-slate-100 select-none">
+                    <input
+                      type="checkbox"
+                      checked={shouldScan}
+                      onChange={(e) => setShouldScan(e.target.checked)}
+                      className="rounded text-blue-900 focus:ring-blue-900 cursor-pointer h-4 w-4"
+                    />
+                    <span>Scan PDF/Image with AI</span>
+                  </label>
+                )}
+
+                <button
+                  onClick={() => handleOpenFolderModal("create")}
+                  className="flex items-center space-x-2 px-4 py-2 border-2 border-blue-900 text-blue-900 hover:bg-blue-50 font-bold rounded-xl text-sm transition-colors shadow-sm"
+                >
+                  <FolderPlus className="h-4 w-4" />
+                  <span>New Folder</span>
+                </button>
+
+                {selectedFolderId && (
+                  <button
+                    onClick={() => fileInputRef.current?.click()}
+                    className="flex items-center space-x-2 px-4 py-2 bg-blue-900 text-white hover:bg-blue-800 font-bold rounded-xl text-sm transition-colors shadow-sm"
+                  >
+                    <Upload className="h-4 w-4" />
+                    <span>Upload File</span>
+                  </button>
+                )}
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  onChange={handleUploadFile}
+                  className="hidden"
+                  accept=".pdf,.png,.jpg,.jpeg"
+                />
+              </div>
             </div>
 
-            {/* Folder Creation Input */}
-            {isCreatingFolder && (
-              <form onSubmit={handleCreateFolder} className="flex gap-2 bg-white p-2 rounded-xl border-2 border-blue-900">
-                <input
-                  type="text"
-                  placeholder="Folder name..."
-                  value={newFolderName}
-                  onChange={(e) => setNewFolderName(e.target.value)}
-                  className="flex-1 px-2 py-1 text-sm border-none outline-none focus:ring-0"
-                  autoFocus
-                />
-                <button type="submit" className="p-1 text-emerald-600 hover:bg-emerald-50 rounded-lg">
-                  <Check className="h-4 w-4" />
-                </button>
-                <button 
-                  type="button" 
-                  onClick={() => { setIsCreatingFolder(false); setNewFolderName(""); }}
-                  className="p-1 text-rose-600 hover:bg-rose-50 rounded-lg"
-                >
-                  <X className="h-4 w-4" />
-                </button>
-              </form>
-            )}
+            {/* Folder Content Pane (Y-axis Scrollbar) */}
+            <div className="flex-1 overflow-y-auto space-y-8 pr-2 mt-4">
+              {uploadStatus && (
+                <div className="flex items-center gap-3 bg-blue-50 border border-blue-200 text-blue-900 font-bold p-3 rounded-2xl text-sm">
+                  <AlertCircle className="h-4 w-4 animate-spin" />
+                  <span>{uploadStatus}</span>
+                </div>
+              )}
 
-            {/* Folders List */}
-            <div className="space-y-2 max-h-[300px] overflow-y-auto">
-              {/* Root Folder */}
-              <button
-                onClick={() => setSelectedFolderId(null)}
-                className={`w-full flex items-center justify-between px-4 py-3 rounded-xl font-bold text-left transition-all duration-150 ${
-                  selectedFolderId === null 
-                    ? "bg-blue-900 text-white shadow-md" 
-                    : "text-slate-700 hover:bg-slate-200"
-                }`}
-              >
-                <span className="flex items-center gap-2">
-                  <Folder className="h-5 w-5" />
-                  Root / All Files
-                </span>
-                <span className="text-xs bg-slate-300 text-slate-800 px-2.5 py-0.5 rounded-full font-bold">
-                  {documents.filter(d => d.folderId === null).length}
-                </span>
-              </button>
+              {/* Root View: Show ONLY folders */}
+              {!selectedFolderId && (
+                <div className="space-y-4">
+                  <h3 className="text-lg font-bold text-slate-800">Folders</h3>
+                  {folders.length === 0 ? (
+                    <p className="text-slate-400 font-semibold text-sm italic">No folders created yet.</p>
+                  ) : (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+                      {folders.map(folder => (
+                        <div 
+                          key={folder._id}
+                          className="bg-slate-50 hover:bg-slate-100/80 border border-slate-200 hover:border-slate-350 rounded-2xl p-4 flex items-center justify-between cursor-pointer transition-all shadow-sm relative group"
+                        >
+                          <div 
+                            onClick={() => setSelectedFolderId(folder._id)}
+                            className="flex-1 flex items-center gap-3 min-w-0"
+                          >
+                            <Folder className="h-10 w-10 text-amber-500 fill-amber-400 shrink-0" />
+                            <span className="font-bold text-slate-800 truncate pr-4">{folder.name}</span>
+                          </div>
 
-              {/* User Folders */}
-              {folders.map(folder => (
-                <div 
-                  key={folder._id}
-                  className={`group w-full flex items-center justify-between px-2 rounded-xl transition-all duration-150 ${
-                    selectedFolderId === folder._id 
-                      ? "bg-blue-100 border-2 border-blue-900 text-blue-900" 
-                      : "hover:bg-slate-200 text-slate-700"
-                  }`}
-                >
-                  {editingFolderId === folder._id ? (
-                    <div className="flex-1 flex gap-1 p-1">
-                      <input
-                        type="text"
-                        value={editingFolderName}
-                        onChange={(e) => setEditingFolderName(e.target.value)}
-                        className="flex-1 px-2 py-1 text-sm border border-slate-300 rounded-lg focus:outline-none focus:border-blue-900 bg-white"
-                        autoFocus
-                      />
-                      <button onClick={() => handleRenameFolder(folder._id)} className="p-1 text-emerald-600 hover:bg-emerald-50 rounded-lg">
-                        <Check className="h-4 w-4" />
-                      </button>
-                      <button onClick={() => { setEditingFolderId(null); setEditingFolderName(""); }} className="p-1 text-rose-600 hover:bg-rose-50 rounded-lg">
-                        <X className="h-4 w-4" />
-                      </button>
+                          {/* Folder Options Menu */}
+                          <div className="relative shrink-0">
+                            <button
+                              onClick={() => setActiveMenuId(activeMenuId === folder._id ? null : folder._id)}
+                              className="p-1.5 text-slate-500 hover:bg-slate-200 rounded-lg"
+                            >
+                              <MoreVertical className="h-4 w-4" />
+                            </button>
+
+                            {activeMenuId === folder._id && (
+                              <div className="absolute right-0 mt-1 w-36 bg-white border border-slate-200 rounded-xl shadow-lg z-30 overflow-hidden font-bold text-sm">
+                                <button
+                                  onClick={() => handleOpenFolderModal("rename", folder._id, folder.name)}
+                                  className="w-full text-left px-4 py-2.5 text-slate-700 hover:bg-slate-100 flex items-center gap-2"
+                                >
+                                  <Edit2 className="h-3.5 w-3.5" />
+                                  Rename
+                                </button>
+                                <button
+                                  onClick={() => handleDeleteFolder(folder._id)}
+                                  className="w-full text-left px-4 py-2.5 text-rose-600 hover:bg-rose-50 flex items-center gap-2"
+                                >
+                                  <Trash2 className="h-3.5 w-3.5" />
+                                  Delete
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Folder Detail View: Show Files inside clicked folder */}
+              {selectedFolderId && (
+                <div className="space-y-4">
+                  <div className="flex items-center gap-2">
+                    <button 
+                      onClick={() => setSelectedFolderId(null)}
+                      className="p-1.5 text-slate-500 hover:bg-slate-100 rounded-lg flex items-center"
+                    >
+                      <ChevronLeft className="h-5 w-5" />
+                      <span className="text-xs font-bold">Back to Folders</span>
+                    </button>
+                  </div>
+                  <h3 className="text-lg font-bold text-slate-800">
+                    Files ({folderDocuments.length})
+                  </h3>
+
+                  {folderDocuments.length === 0 ? (
+                    <div className="text-center py-16 bg-slate-50 rounded-3xl border border-dashed border-slate-200">
+                      <FileText className="h-12 w-12 text-slate-400 mx-auto mb-3" />
+                      <p className="text-slate-500 font-semibold">This folder is empty. Upload a file above.</p>
                     </div>
                   ) : (
-                    <>
-                      <button
-                        onClick={() => setSelectedFolderId(folder._id)}
-                        className="flex-1 flex items-center gap-2 py-3 px-2 font-semibold text-left"
-                      >
-                        <Folder className="h-5 w-5 text-blue-700" />
-                        <span className="truncate max-w-[150px]">{folder.name}</span>
-                      </button>
-                      <div className="flex items-center gap-1">
-                        <span className="text-xs bg-slate-200 text-slate-700 px-2 py-0.5 rounded-full font-bold group-hover:inline">
-                          {documents.filter(d => d.folderId === folder._id).length}
-                        </span>
-                        <button
-                          onClick={() => { setEditingFolderId(folder._id); setEditingFolderName(folder.name); }}
-                          className="p-1.5 text-slate-500 hover:text-blue-900 hover:bg-white rounded-lg opacity-0 group-hover:opacity-100 transition-opacity"
+                    <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
+                      {folderDocuments.map((doc) => (
+                        <div
+                          key={doc._id}
+                          className="bg-white hover:bg-slate-50/50 border border-slate-200 rounded-2xl p-4 flex items-center justify-between shadow-sm relative"
                         >
-                          <Edit2 className="h-4 w-4" />
-                        </button>
+                          <div 
+                            onClick={() => handleDownloadFile(doc._id)}
+                            className="flex-1 flex items-center gap-3 min-w-0 cursor-pointer"
+                          >
+                            <FileText className="h-8 w-8 text-blue-900 shrink-0" />
+                            <div className="min-w-0">
+                              <p className="font-bold text-slate-800 truncate pr-2" title={doc.originalName}>
+                                {doc.originalName}
+                              </p>
+                              <div className="flex flex-wrap items-center gap-1.5 mt-1">
+                                <span className="text-[10px] text-slate-500 font-extrabold bg-slate-100 px-2 py-0.5 rounded-full border border-slate-200 inline-block">
+                                  {doc.category}
+                                </span>
+                                {doc.scanned !== false ? (
+                                  <span className="text-[10px] text-emerald-700 font-extrabold bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-250 inline-block">
+                                    AI Scanned
+                                  </span>
+                                ) : (
+                                  <span className="text-[10px] text-slate-500 font-extrabold bg-slate-100 px-2 py-0.5 rounded-full border border-slate-200 inline-block">
+                                    Unscanned
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* File Options Menu */}
+                          <div className="relative shrink-0">
+                            <button
+                              onClick={() => setActiveMenuId(activeMenuId === doc._id ? null : doc._id)}
+                              className="p-1.5 text-slate-500 hover:bg-slate-100 rounded-lg"
+                            >
+                              <MoreVertical className="h-4 w-4" />
+                            </button>
+
+                            {activeMenuId === doc._id && (
+                              <div className="absolute right-0 mt-1 w-36 bg-white border border-slate-200 rounded-xl shadow-lg z-30 overflow-hidden font-bold text-sm">
+                                <button
+                                  onClick={() => handleOpenFileModal(doc._id, doc.originalName)}
+                                  className="w-full text-left px-4 py-2.5 text-slate-700 hover:bg-slate-100 flex items-center gap-2"
+                                >
+                                  <Edit2 className="h-3.5 w-3.5" />
+                                  Rename
+                                </button>
+                                <button
+                                  onClick={() => handleDeleteFile(doc._id)}
+                                  className="w-full text-left px-4 py-2.5 text-rose-600 hover:bg-rose-50 flex items-center gap-2"
+                                >
+                                  <Trash2 className="h-3.5 w-3.5" />
+                                  Delete
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* TAB: Notes Workspace (occupying full screen area below header) */}
+        {!isAiOpen && activeTab === "notes" && (
+          <div className="flex-1 flex bg-white border-t border-slate-200 overflow-hidden h-full relative">
+            
+            {/* Notes Sidebar - List */}
+            <aside
+              className={`w-full md:w-[320px] bg-[#f8f7f5] border-r border-slate-200 flex flex-col z-25 transition-all duration-300 absolute md:relative inset-y-0 left-0 ${
+                isNotesSidebarOpen ? "translate-x-0" : "-translate-x-full md:translate-x-0"
+              }`}
+            >
+              {/* Sidebar Toolbar */}
+              <div className="p-4 flex items-center justify-between border-b border-slate-200 bg-[#ebeae6]/40">
+                <h2 className="text-xl font-bold text-slate-800">Notebook</h2>
+                <button
+                  onClick={handleCreateNote}
+                  className="p-2 text-amber-600 hover:bg-amber-100 rounded-xl transition-colors"
+                  title="New Note"
+                >
+                  <Plus className="h-5 w-5" />
+                </button>
+              </div>
+
+              {/* Search */}
+              <div className="p-3 border-b border-slate-200 bg-[#ebeae6]/40">
+                <div className="relative">
+                  <Search className="absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
+                  <input
+                    type="text"
+                    placeholder="Search notes..."
+                    value={noteSearchQuery}
+                    onChange={(e) => setNoteSearchQuery(e.target.value)}
+                    className="w-full pl-9 pr-4 py-1.5 bg-white border border-slate-300 rounded-xl text-sm focus:outline-none focus:border-amber-500"
+                  />
+                </div>
+              </div>
+
+              {/* List rows */}
+              <div className="flex-1 overflow-y-auto">
+                {filteredNotes.length === 0 ? (
+                  <p className="text-center py-8 text-slate-400 font-semibold italic text-sm">No notes found.</p>
+                ) : (
+                  filteredNotes.map((note) => {
+                    const isSelected = note._id === selectedNoteId;
+                    return (
+                      <div
+                        key={note._id}
+                        onClick={() => {
+                          setSelectedNoteId(note._id);
+                          setIsNotesSidebarOpen(false);
+                        }}
+                        className={`p-4 border-b border-slate-200 cursor-pointer transition-all flex items-center justify-between ${
+                          isSelected
+                            ? "bg-amber-100/50 border-l-4 border-l-amber-500"
+                            : "hover:bg-slate-100"
+                        }`}
+                      >
+                        <div className="flex-1 min-w-0 pr-2">
+                          <div className="flex items-center justify-between">
+                            <h3 className="font-bold text-slate-800 truncate max-w-[140px]">
+                              {note.title || "Untitled Note"}
+                            </h3>
+                            <span className="text-xs text-slate-500 font-semibold shrink-0 ml-2">
+                              {formatDate(note.updatedAt)}
+                            </span>
+                          </div>
+                          <p className="text-sm text-slate-550 truncate mt-1">
+                            {note.rawText || "No context text"}
+                          </p>
+                        </div>
+
+                        {/* Inline Delete Button on Right side of the note row */}
                         <button
-                          onClick={() => handleDeleteFolder(folder._id)}
-                          className="p-1.5 text-slate-500 hover:text-rose-600 hover:bg-white rounded-lg opacity-0 group-hover:opacity-100 transition-opacity"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleDeleteNote(note._id);
+                          }}
+                          className="p-1.5 text-slate-400 hover:text-red-650 hover:bg-slate-200 rounded-lg transition-colors shrink-0"
+                          title="Delete Note"
                         >
                           <Trash2 className="h-4 w-4" />
                         </button>
                       </div>
-                    </>
-                  )}
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-
-        {/* Right Main Panel - Files & Upload */}
-        <div className="lg:col-span-8 p-6 flex flex-col justify-between">
-          <div className="space-y-6">
-            {/* Header / Breadcrumb */}
-            <div className="border-b pb-4 flex items-center justify-between">
-              <div>
-                <div className="flex items-center space-x-1.5 text-slate-500 text-sm font-semibold mb-1">
-                  <span>Root</span>
-                  <ChevronRight className="h-4 w-4" />
-                  <span className="text-slate-900">{currentFolderName}</span>
-                </div>
-                <h3 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
-                  <Folder className="h-6 w-6 text-blue-900" />
-                  {currentFolderName} Files
-                </h3>
-              </div>
-            </div>
-
-            {/* Upload Area inside current folder */}
-            <section className="border-2 border-dashed border-slate-300 hover:border-blue-900 bg-slate-50 hover:bg-blue-50/30 rounded-2xl p-6 transition-all duration-150">
-              <div
-                onDragEnter={handleDrag}
-                onDragOver={handleDrag}
-                onDragLeave={handleDrag}
-                onDrop={handleDrop}
-                onClick={onButtonClick}
-                className="flex flex-col items-center justify-center text-center space-y-4 cursor-pointer"
-              >
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  className="hidden"
-                  onChange={handleFileChange}
-                  accept=".pdf,.doc,.docx,.jpg,.png,.txt"
-                />
-                <div className="p-3 bg-white text-blue-900 rounded-full border-2 border-blue-900 shadow-sm">
-                  <Upload className="h-8 w-8" />
-                </div>
-                <div>
-                  <h4 className="text-lg font-bold text-blue-950">Upload here to "{currentFolderName}"</h4>
-                  <p className="text-sm text-slate-500 max-w-sm mx-auto mt-1">
-                    Drag a file here or click to choose from your device.
-                  </p>
-                </div>
-                {uploadStatus && (
-                  <div className="flex items-center space-x-2 bg-blue-50 text-blue-950 border border-blue-300 p-3 rounded-xl text-sm font-bold">
-                    <AlertCircle className="h-4 w-4 text-blue-900" />
-                    <span>{uploadStatus}</span>
-                  </div>
+                    );
+                  })
                 )}
               </div>
-            </section>
+            </aside>
 
-            {/* Files List Table */}
-            <div className="space-y-4">
-              <h4 className="text-lg font-bold text-slate-800">Files ({currentDocuments.length})</h4>
-              
-              {currentDocuments.length === 0 ? (
-                <div className="text-center py-12 bg-slate-50 rounded-2xl border-2 border-dashed border-slate-200">
-                  <FileText className="h-12 w-12 text-slate-400 mx-auto mb-3" />
-                  <p className="text-slate-600 font-semibold">No files uploaded in this folder yet.</p>
+            {/* Note Editor Area */}
+            <div className="flex-1 flex flex-col bg-white">
+              {/* Note Header / Controls */}
+              <div className="px-6 py-4 flex items-center justify-between border-b border-slate-100 bg-slate-50/50">
+                <div className="flex items-center gap-3">
+                  <button
+                    onClick={() => setIsNotesSidebarOpen(true)}
+                    className="p-2 md:hidden text-slate-600 hover:bg-slate-200 rounded-lg"
+                    title="Show Notebook list"
+                  >
+                    <ChevronLeft className="h-5 w-5" />
+                  </button>
+                  {selectedNoteId && (
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={handleSaveNote}
+                        className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-500 hover:bg-amber-600 text-white rounded-xl text-xs font-bold shadow-sm transition-colors"
+                        title="Save note"
+                      >
+                        <Save className="h-3.5 w-3.5" />
+                        <span>Save Note</span>
+                      </button>
+                      {noteSaveStatus && (
+                        <span className="text-xs text-slate-500 font-bold animate-pulse">
+                          {noteSaveStatus}
+                        </span>
+                      )}
+                    </div>
+                  )}
+                </div>
+                {selectedNoteId && (
+                  <button
+                    onClick={() => handleDeleteNote(selectedNoteId)}
+                    className="p-2 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-xl"
+                    title="Delete Note"
+                  >
+                    <Trash2 className="h-5 w-5" />
+                  </button>
+                )}
+              </div>
+
+              {/* Note Workspace */}
+              {selectedNoteId ? (
+                <div className="flex-1 flex flex-col p-6 space-y-4 overflow-y-auto">
+                  <input
+                    type="text"
+                    value={noteTitle}
+                    onChange={(e) => setNoteTitle(e.target.value)}
+                    placeholder="Note Title..."
+                    className="text-3xl font-black text-slate-900 border-none outline-none focus:ring-0 w-full placeholder-slate-300"
+                  />
+
+                  {editor && (
+                    <div className="flex flex-wrap items-center gap-1 bg-[#f4f3ef]/50 p-1.5 rounded-2xl border border-slate-200">
+                      <button
+                        onClick={() => editor.chain().focus().toggleBold().run()}
+                        className={`p-2 rounded-lg font-bold transition-all ${
+                          editor.isActive("bold")
+                            ? "bg-amber-500 text-white"
+                            : "hover:bg-slate-200 text-slate-700"
+                        }`}
+                      >
+                        <Bold className="h-4 w-4" />
+                      </button>
+                      <button
+                        onClick={() => editor.chain().focus().toggleItalic().run()}
+                        className={`p-2 rounded-lg transition-all ${
+                          editor.isActive("italic")
+                            ? "bg-amber-500 text-white"
+                            : "hover:bg-slate-200 text-slate-700"
+                        }`}
+                      >
+                        <Italic className="h-4 w-4" />
+                      </button>
+                      <button
+                        onClick={() => editor.chain().focus().toggleBulletList().run()}
+                        className={`p-2 rounded-lg transition-all ${
+                          editor.isActive("bulletList")
+                            ? "bg-amber-500 text-white"
+                            : "hover:bg-slate-200 text-slate-700"
+                        }`}
+                      >
+                        <List className="h-4 w-4" />
+                      </button>
+                      <button
+                        onClick={() =>
+                          editor.chain().focus().toggleHighlight({ color: "#fef08a" }).run()
+                        }
+                        className={`p-2 rounded-lg transition-all ${
+                          editor.isActive("highlight")
+                            ? "bg-amber-500 text-white"
+                            : "hover:bg-slate-200 text-slate-700"
+                        }`}
+                      >
+                        <Highlighter className="h-4 w-4" />
+                      </button>
+                    </div>
+                  )}
+
+                  {editor && (
+                    <div className="flex-1 min-h-[300px] text-lg prose max-w-none focus:outline-none placeholder-slate-400 select-text">
+                      <EditorContent editor={editor} className="outline-none" />
+                    </div>
+                  )}
                 </div>
               ) : (
-                <div className="border border-slate-200 rounded-2xl overflow-hidden bg-white shadow-sm">
-                  <table className="min-w-full divide-y divide-slate-200">
-                    <thead className="bg-slate-50">
-                      <tr>
-                        <th className="px-6 py-3 text-left text-xs font-bold text-slate-500 uppercase tracking-wider">Name</th>
-                        <th className="px-6 py-3 text-left text-xs font-bold text-slate-500 uppercase tracking-wider">Category</th>
-                        <th className="px-6 py-3 text-left text-xs font-bold text-slate-500 uppercase tracking-wider">Uploaded At</th>
-                        <th className="px-6 py-3 text-right text-xs font-bold text-slate-500 uppercase tracking-wider">Actions</th>
-                      </tr>
-                    </thead>
-                    <tbody className="bg-white divide-y divide-slate-200">
-                      {currentDocuments.map((doc) => (
-                        <tr key={doc._id} className="hover:bg-slate-50/50">
-                          <td className="px-6 py-4 whitespace-nowrap">
-                            {editingFileId === doc._id ? (
-                              <div className="flex items-center gap-2">
-                                <input
-                                  type="text"
-                                  value={editingFileName}
-                                  onChange={(e) => setEditingFileName(e.target.value)}
-                                  className="px-2 py-1 text-sm border border-slate-300 rounded-lg focus:outline-none focus:border-blue-900 bg-white"
-                                  autoFocus
-                                />
-                                <button onClick={() => handleRenameFile(doc._id)} className="p-1 text-emerald-600 hover:bg-emerald-50 rounded-lg">
-                                  <Check className="h-4 w-4" />
-                                </button>
-                                <button onClick={() => { setEditingFileId(null); setEditingFileName(""); }} className="p-1 text-rose-600 hover:bg-rose-50 rounded-lg">
-                                  <X className="h-4 w-4" />
-                                </button>
-                              </div>
-                            ) : (
-                              <div className="flex items-center space-x-3">
-                                <FileText className="h-5 w-5 text-blue-900" />
-                                <span className="font-semibold text-slate-800 truncate max-w-[200px]" title={doc.originalName}>
-                                  {doc.originalName}
-                                </span>
-                              </div>
-                            )}
-                          </td>
-                          <td className="px-6 py-4 whitespace-nowrap">
-                            <span className={`px-2.5 py-1 inline-flex text-xs font-bold rounded-full border ${getCategoryColor(doc.category)}`}>
-                              {doc.category}
-                            </span>
-                          </td>
-                          <td className="px-6 py-4 whitespace-nowrap text-sm text-slate-500 font-medium">
-                            {new Date(doc.createdAt).toLocaleDateString(undefined, {
-                              year: "numeric",
-                              month: "short",
-                              day: "numeric",
-                            })}
-                          </td>
-                          <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-semibold">
-                            <div className="flex items-center justify-end space-x-2">
-                              <button
-                                onClick={() => { setEditingFileId(doc._id); setEditingFileName(doc.originalName); }}
-                                className="p-2 text-slate-500 hover:text-blue-900 hover:bg-slate-100 rounded-xl transition-colors"
-                                title="Rename File"
-                              >
-                                <Edit2 className="h-4 w-4" />
-                              </button>
-                              <button
-                                onClick={() => handleDeleteFile(doc._id)}
-                                className="p-2 text-slate-500 hover:text-rose-600 hover:bg-slate-100 rounded-xl transition-colors"
-                                title="Delete File"
-                              >
-                                <Trash2 className="h-4 w-4" />
-                              </button>
-                            </div>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                <div className="flex-1 flex flex-col items-center justify-center text-slate-400 p-6">
+                  <BookOpen className="h-16 w-16 mb-4 text-slate-350" />
+                  <h3 className="text-xl font-bold text-slate-700">No Note Open</h3>
+                  <p className="text-sm mt-1">Select a note from the list, or click "+" above to create one.</p>
                 </div>
               )}
             </div>
-          </div>
-        </div>
 
-      </div>
+          </div>
+        )}
+
+        {/* 4. Full-Screen AI Chatbot Overlay (occupies full screen space below navbar) */}
+        {isAiOpen && (
+          <div className="absolute inset-0 bg-white z-30 flex flex-col animate-fade-in select-text border-t border-slate-200">
+            {/* Full Screen Header */}
+            <div className="px-6 py-4 border-b bg-slate-50 flex items-center justify-between shadow-sm">
+              <div className="flex items-center gap-3">
+                <Bot className="h-8 w-8 text-blue-900 animate-bounce" />
+                <h2 className="text-2xl font-black text-slate-800">Voice & Text Assistant</h2>
+              </div>
+              <button
+                onClick={() => setIsAiOpen(false)}
+                className="flex items-center gap-1.5 px-4 py-2 border border-slate-300 hover:border-slate-800 text-slate-700 hover:text-slate-900 font-bold rounded-xl text-sm transition-colors"
+              >
+                <X className="h-5 w-5" />
+                <span>Close Assistant</span>
+              </button>
+            </div>
+
+            {/* Chat Interface Container (Occupying Full Space below Navbar) */}
+            <div className="flex-1 max-w-4xl w-full mx-auto p-4 md:p-6 flex flex-col overflow-hidden">
+              <ChatBot />
+            </div>
+          </div>
+        )}
+      </main>
+
+      {/* 3. Floating Robot Icon (Bottom Right corner) */}
+      {!isAiOpen && (
+        <button
+          onClick={() => setIsAiOpen(true)}
+          className="fixed bottom-6 right-6 p-4 bg-blue-900 border-4 border-white text-white rounded-full shadow-2xl hover:bg-blue-800 hover:scale-105 active:scale-95 transition-all z-30"
+          title="Open AI Assistant"
+        >
+          <Bot className="h-9 w-9 animate-pulse" />
+        </button>
+      )}
+
+      {/* 5. Custom Dialog Modals (Microsoft-style dialog inputs) */}
+      {/* Folder Dialog Modal */}
+      {isFolderModalOpen && (
+        <div className="fixed inset-0 bg-slate-950/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <form 
+            onSubmit={handleFolderModalSubmit}
+            className="bg-white border-4 border-blue-900 w-full max-w-md rounded-3xl p-6 shadow-2xl space-y-6 animate-scale-up"
+          >
+            <h3 className="text-2xl font-extrabold text-slate-900">
+              {folderModalMode === "create" ? "Create New Folder" : "Rename Folder"}
+            </h3>
+            
+            <div className="space-y-1.5">
+              <label className="text-xs font-bold uppercase tracking-wider text-slate-500">Folder Name</label>
+              <input
+                type="text"
+                placeholder="E.g., Medical Records, Taxes..."
+                value={folderModalInput}
+                onChange={(e) => setFolderModalInput(e.target.value)}
+                className="w-full px-4 py-3 border-2 border-slate-300 rounded-xl text-lg font-medium focus:border-blue-900 focus:outline-none"
+                autoFocus
+              />
+            </div>
+
+            <div className="flex items-center justify-end gap-3 pt-2">
+              <button
+                type="button"
+                onClick={() => { setIsFolderModalOpen(false); setFolderModalInput(""); }}
+                className="px-5 py-2.5 border-2 border-slate-200 hover:border-slate-800 text-slate-700 hover:text-slate-900 font-bold rounded-xl text-sm transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                className="px-5 py-2.5 bg-blue-900 hover:bg-blue-800 text-white font-bold rounded-xl text-sm transition-colors shadow-md"
+              >
+                {folderModalMode === "create" ? "OK" : "Rename"}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* File Dialog Modal */}
+      {isFileModalOpen && (
+        <div className="fixed inset-0 bg-slate-950/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <form 
+            onSubmit={handleFileModalSubmit}
+            className="bg-white border-4 border-blue-900 w-full max-w-md rounded-3xl p-6 shadow-2xl space-y-6 animate-scale-up"
+          >
+            <h3 className="text-2xl font-extrabold text-slate-900">Rename File</h3>
+            
+            <div className="space-y-1.5">
+              <label className="text-xs font-bold uppercase tracking-wider text-slate-500">File Name</label>
+              <input
+                type="text"
+                value={fileModalInput}
+                onChange={(e) => setFileModalInput(e.target.value)}
+                className="w-full px-4 py-3 border-2 border-slate-300 rounded-xl text-lg font-medium focus:border-blue-900 focus:outline-none"
+                autoFocus
+              />
+            </div>
+
+            <div className="flex items-center justify-end gap-3 pt-2">
+              <button
+                type="button"
+                onClick={() => { setIsFileModalOpen(false); setFileModalInput(""); }}
+                className="px-5 py-2.5 border-2 border-slate-200 hover:border-slate-800 text-slate-700 hover:text-slate-900 font-bold rounded-xl text-sm transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                className="px-5 py-2.5 bg-blue-900 hover:bg-blue-800 text-white font-bold rounded-xl text-sm transition-colors shadow-md"
+              >
+                OK
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
     </div>
   );
 }

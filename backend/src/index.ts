@@ -1,4 +1,5 @@
 import "dotenv/config";
+process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
 import express, { Request, Response } from "express";
 import cors from "cors";
 import mongoose from "mongoose";
@@ -6,6 +7,7 @@ import mongoose from "mongoose";
 import documentRoutes from "./routes/documents";
 import notesRoutes from "./routes/notes";
 import aiRoutes from "./routes/ai";
+import authRoutes from "./routes/auth";
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -23,6 +25,7 @@ app.use(express.json());
 app.use("/api/documents", documentRoutes);
 app.use("/api/notes", notesRoutes);
 app.use("/api/ai", aiRoutes);
+app.use("/api/auth", authRoutes);
 
 // Health check endpoint
 app.get("/health", (req: Request, res: Response) => {

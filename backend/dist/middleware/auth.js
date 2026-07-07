@@ -1,22 +1,32 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.requireMultiTenancy = exports.validateJwt = void 0;
-const express_oauth2_jwt_bearer_1 = require("express-oauth2-jwt-bearer");
-// Configures JWT validation via Auth0
-exports.validateJwt = (0, express_oauth2_jwt_bearer_1.auth)({
-    audience: process.env.AUTH0_AUDIENCE || "https://family-vault-api/",
-    issuerBaseURL: process.env.AUTH0_ISSUER_BASE_URL || "https://YOUR_AUTH0_DOMAIN.auth0.com/",
-    tokenSigningAlg: "RS256"
-});
-// Middleware to extract user identity from validated Auth0 sub claim
+const auth_1 = require("../routes/auth");
+// Custom JWT verification middleware replacing Auth0 validation
+const validateJwt = (req, res, next) => {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith("Bearer ")) {
+        return res.status(401).json({ error: "Unauthorized: Missing token." });
+    }
+    const token = authHeader.split(" ")[1];
+    try {
+        const payload = (0, auth_1.verifyJwt)(token);
+        req.auth = { payload };
+        next();
+    }
+    catch (err) {
+        return res.status(401).json({ error: "Unauthorized: Invalid or expired token.", details: err.message });
+    }
+};
+exports.validateJwt = validateJwt;
+// Middleware to extract user identity from custom JWT payload
 const requireMultiTenancy = (req, res, next) => {
-    // express-oauth2-jwt-bearer stores payload under req.auth
     const authPayload = req.auth?.payload;
-    if (!authPayload || !authPayload.sub) {
-        return res.status(401).json({ error: "Unauthorized access: Tenant identification claims missing." });
+    if (!authPayload || !authPayload.userId) {
+        return res.status(401).json({ error: "Unauthorized access: User identification claims missing." });
     }
     // Bind tenant identifier for subsequent database queries
-    req.auth0UserId = authPayload.sub;
+    req.auth0UserId = authPayload.userId;
     next();
 };
 exports.requireMultiTenancy = requireMultiTenancy;

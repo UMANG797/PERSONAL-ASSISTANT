@@ -1,6 +1,5 @@
 import React from "react";
-import { UserProvider } from "@auth0/nextjs-auth0/client";
-import Navbar from "./components/Navbar";
+import { AuthProvider } from "./components/AuthContext";
 import "./globals.css";
 
 export const metadata = {
@@ -15,14 +14,11 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <UserProvider>
-        <body className="min-h-screen flex flex-col bg-slate-50 text-slate-900 selection:bg-blue-100">
-          <Navbar />
-          <main className="flex-1 max-w-6xl w-full mx-auto p-6">
-            {children}
-          </main>
-        </body>
-      </UserProvider>
+      <body className="min-h-screen flex flex-col bg-slate-50 text-slate-900 selection:bg-blue-100">
+        <AuthProvider>
+          {children}
+        </AuthProvider>
+      </body>
     </html>
   );
 }

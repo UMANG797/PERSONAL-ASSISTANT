@@ -4,12 +4,14 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 require("dotenv/config");
+process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
 const express_1 = __importDefault(require("express"));
 const cors_1 = __importDefault(require("cors"));
 const mongoose_1 = __importDefault(require("mongoose"));
 const documents_1 = __importDefault(require("./routes/documents"));
 const notes_1 = __importDefault(require("./routes/notes"));
 const ai_1 = __importDefault(require("./routes/ai"));
+const auth_1 = __importDefault(require("./routes/auth"));
 const app = (0, express_1.default)();
 const PORT = process.env.PORT || 5000;
 // CORS configuration supporting token-based mobile-ready API interactions (no cookies required)
@@ -23,6 +25,7 @@ app.use(express_1.default.json());
 app.use("/api/documents", documents_1.default);
 app.use("/api/notes", notes_1.default);
 app.use("/api/ai", ai_1.default);
+app.use("/api/auth", auth_1.default);
 // Health check endpoint
 app.get("/health", (req, res) => {
     res.status(200).json({ status: "healthy", timestamp: new Date() });

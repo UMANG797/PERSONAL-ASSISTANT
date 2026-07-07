@@ -2,6 +2,7 @@
 
 import React, { useState, useRef, useEffect } from "react";
 import { Mic, Send, Volume2, Square, Bot, User, FileText } from "lucide-react";
+import { useAuth } from "../app/components/AuthContext";
 
 interface Message {
   id: string;
@@ -16,6 +17,7 @@ interface Message {
 }
 
 export default function ChatBot() {
+  const { token } = useAuth();
   const [messages, setMessages] = useState<Message[]>([
     {
       id: "1",
@@ -53,18 +55,6 @@ export default function ChatBot() {
 
     try {
       const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000/api";
-
-      // Fetch Auth0 token
-      let token = "";
-      try {
-        const tokenRes = await fetch("/api/auth/token");
-        if (tokenRes.ok) {
-          const tokenData = await tokenRes.json();
-          token = tokenData.accessToken || "";
-        }
-      } catch (err) {
-        console.warn("Could not retrieve Auth0 token for chatbot:", err);
-      }
 
       const headers: Record<string, string> = {
         "Content-Type": "application/json",
@@ -130,18 +120,6 @@ export default function ChatBot() {
   const handleDownloadFile = async (fileId: string) => {
     try {
       const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000/api";
-      
-      let token = "";
-      try {
-        const tokenRes = await fetch("/api/auth/token");
-        if (tokenRes.ok) {
-          const tokenData = await tokenRes.json();
-          token = tokenData.accessToken || "";
-        }
-      } catch (err) {
-        console.warn("Could not retrieve Auth0 token for file download:", err);
-      }
-
       const headers: Record<string, string> = {};
       if (token) {
         headers["Authorization"] = `Bearer ${token}`;
