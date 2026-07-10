@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Family Vault</string>
+    <string name="title_activity_main">Family Vault</string>
+    <string name="package_name">com.familyvault.app</string>
+    <string name="custom_url_scheme">com.familyvault.app</string>
+</resources>

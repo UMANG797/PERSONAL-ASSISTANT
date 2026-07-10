@@ -15,55 +15,108 @@ router.post("/chat", validateJwt, requireMultiTenancy, async (req: Request, res:
   }
 
   try {
-    // 1. Generate Query Vector Embedding via AWS Titan Embeddings
-    const titanPayload = {
-      inputText: query,
-    };
+    const lowercaseQuery = query.toLowerCase();
+    const isAggregateQuery = 
+      lowercaseQuery.includes("total") ||
+      lowercaseQuery.includes("amount") ||
+      lowercaseQuery.includes("sum") ||
+      lowercaseQuery.includes("all files") ||
+      lowercaseQuery.includes("all documents") ||
+      lowercaseQuery.includes("summary") ||
+      lowercaseQuery.includes("list of");
 
-    const bedrockTitanCommand = new InvokeModelCommand({
-      modelId: "amazon.titan-embed-text-v2:0",
-      contentType: "application/json",
-      accept: "application/json",
-      body: JSON.stringify(titanPayload),
+    const isFileRequest = 
+      lowercaseQuery.includes("give me") ||
+      lowercaseQuery.includes("show") ||
+      lowercaseQuery.includes("download") ||
+      lowercaseQuery.includes("get") ||
+      lowercaseQuery.includes("file") ||
+      lowercaseQuery.includes("document");
+
+    let searchResults: any[] = [];
+
+    // 1. Fetch relevant or all documents
+    if (isAggregateQuery) {
+      // Fetch all documents for aggregate analysis
+      searchResults = await DocumentModel.find({ auth0UserId: req.auth0UserId }).sort({ createdAt: -1 });
+    } else {
+      // Generate Query Vector Embedding via AWS Titan Embeddings
+      try {
+        const titanPayload = {
+          inputText: query,
+        };
+
+        const bedrockTitanCommand = new InvokeModelCommand({
+          modelId: "amazon.titan-embed-text-v2:0",
+          contentType: "application/json",
+          accept: "application/json",
+          body: JSON.stringify(titanPayload),
+        });
+
+        const titanResponse = await bedrockClient.send(bedrockTitanCommand);
+        const titanResult = JSON.parse(new TextDecoder().decode(titanResponse.body));
+        const queryVector = titanResult.embedding;
+
+        // Query MongoDB Atlas using native $vectorSearch matching tenant criteria
+        searchResults = await DocumentModel.aggregate([
+          {
+            $vectorSearch: {
+              index: "vector_index",
+              path: "embedding",
+              queryVector: queryVector,
+              numCandidates: 10,
+              limit: 3,
+            },
+          },
+          // Strict Security Isolation check for multi-tenant isolation
+          {
+            $match: {
+              auth0UserId: req.auth0UserId,
+            },
+          },
+        ]);
+      } catch (vectorSearchErr: any) {
+        console.warn("Atlas Vector Search failed or is unconfigured for documents, falling back to loading latest documents:", vectorSearchErr.message);
+        // Fallback: Retrieve the latest 5 documents for the user as context
+        searchResults = await DocumentModel.find({
+          auth0UserId: req.auth0UserId
+        })
+        .sort({ createdAt: -1 })
+        .limit(5);
+      }
+    }
+
+    // 2. Perform direct filename keyword match (always, to ensure accuracy)
+    const allDocs = await DocumentModel.find({ auth0UserId: req.auth0UserId });
+    const matchedDocs = allDocs.filter(doc => {
+      const nameParts = doc.originalName.toLowerCase().split(/[\s._-]+/);
+      return nameParts.some((part: string | any[]) => part.length > 2 && lowercaseQuery.includes(part));
     });
-
-    const titanResponse = await bedrockClient.send(bedrockTitanCommand);
-    const titanResult = JSON.parse(new TextDecoder().decode(titanResponse.body));
-    const queryVector = titanResult.embedding;
-
-    // 2. Query MongoDB Atlas using native $vectorSearch matching tenant criteria
-    let searchResults = [];
-    try {
-      searchResults = await DocumentModel.aggregate([
-        {
-          $vectorSearch: {
-            index: "vector_index",
-            path: "embedding",
-            queryVector: queryVector,
-            numCandidates: 10,
-            limit: 3,
-          },
-        },
-        // Strict Security Isolation check for multi-tenant isolation
-        {
-          $match: {
-            auth0UserId: req.auth0UserId,
-          },
-        },
-      ]);
-    } catch (vectorSearchErr: any) {
-      console.warn("Atlas Vector Search failed or is unconfigured for documents, falling back to loading latest documents:", vectorSearchErr.message);
-      // Fallback: Retrieve the latest 5 documents for the user as context
-      searchResults = await DocumentModel.find({
-        auth0UserId: req.auth0UserId
-      })
-      .sort({ createdAt: -1 })
-      .limit(5);
+    const existingIds = new Set(searchResults.map((d: any) => d._id.toString()));
+    for (const doc of matchedDocs) {
+      if (!existingIds.has(doc._id.toString())) {
+        searchResults.push(doc);
+      }
     }
 
     // 3. Query notes using $vectorSearch or fallback
     let noteSearchResults = [];
     try {
+      const titanPayload = {
+        inputText: query,
+      };
+
+      const bedrockTitanCommand = new InvokeModelCommand({
+        modelId: "amazon.titan-embed-text-v2:0",
+        contentType: "application/json",
+        accept: "application/json",
+        body: JSON.stringify(titanPayload),
+      });
+
+      const titanResponse = await bedrockClient.send(bedrockTitanCommand);
+      const titanResult = JSON.parse(new TextDecoder().decode(titanResponse.body));
+      const queryVector = titanResult.embedding;
+
       noteSearchResults = await NoteModel.aggregate([
         {
           $vectorSearch: {
@@ -92,7 +145,7 @@ router.post("/chat", validateJwt, requireMultiTenancy, async (req: Request, res:
 
     // Format matches as context for RAG prompt
     const docContextText = searchResults
-      .map((doc: any) => `[Document File: ${doc.originalName}, Category: ${doc.category}] OCR content: ${doc.rawOcrText}`)
+      .map((doc: any) => `[Document ID: ${doc._id}, File: ${doc.originalName}, Category: ${doc.category}] OCR content: ${doc.rawOcrText}`)
       .join("\n\n");
 
     const noteContextText = noteSearchResults
@@ -106,9 +159,9 @@ router.post("/chat", validateJwt, requireMultiTenancy, async (req: Request, res:
 You are the voice assistant for the Family Vault digital locker.
 Your user is an elderly family member. Keep sentences simple, friendly, large-font readable, and highly precise.
 Provide a conversational, easy-to-understand answer based on the secure context documents and notes provided below.
-If the information is not found in the context, tell the user politely and offer to record a note instead.
+If the user asks for calculations (like total amount, sum, count) or a summary, compute it accurately using the information in the documents.
 
-If the user is asking to show, retrieve, or download a specific file (e.g., "give me the file", "show the document", "return only files", "give me this only files"), do not explain or summarize the document content. Instead, respond ONLY with a short message: "Here is your requested document:" and let the system attach the download link. Do not write any other text.
+If the user is asking to show, retrieve, or download a specific file (e.g., "give me the file", "show the document", "return only files", "give me this only files"), do not explain or summarize the document content. Instead, respond ONLY with a short message: "This is your requested document:" and let the system attach the download link. Do not write any other text.
 
 [Context Documents and Notes]:
 ${contextText || "No matching secure documents or notes found."}

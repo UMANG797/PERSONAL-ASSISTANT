@@ -1,0 +1,6 @@
+{
+  "appId": "com.familyvault.app",
+  "appName": "Family Vault",
+  "webDir": "out",
+  "bundledWebRuntime": false
+}

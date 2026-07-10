@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useRef, useEffect } from "react";
-import { Mic, Send, Volume2, Square, Bot, User, FileText } from "lucide-react";
+import { Mic, Send, Volume2, Square, Bot, User, FileText, Download } from "lucide-react";
 import { useAuth } from "../app/components/AuthContext";
 
 interface Message {
@@ -117,7 +117,7 @@ export default function ChatBot() {
     }
   };
 
-  const handleDownloadFile = async (fileId: string) => {
+  const handleDownloadFile = async (fileId: string, originalName?: string) => {
     try {
       const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000/api";
       const headers: Record<string, string> = {};
@@ -134,9 +134,23 @@ export default function ChatBot() {
       }
 
       const { downloadUrl } = await response.json();
-      window.open(downloadUrl, "_blank");
+      
+      // Fetch the file content as a blob to force a download prompt in the browser
+      const fileResponse = await fetch(downloadUrl);
+      if (!fileResponse.ok) throw new Error("Failed to fetch file content.");
+      
+      const blob = await fileResponse.blob();
+      const blobUrl = window.URL.createObjectURL(blob);
+      
+      const link = document.createElement("a");
+      link.href = blobUrl;
+      link.setAttribute("download", originalName || "downloaded-file");
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(blobUrl);
     } catch (err: any) {
-      alert(`Could not open file: ${err.message}`);
+      alert(`Could not download file: ${err.message}`);
     }
   };
 
@@ -174,29 +188,65 @@ export default function ChatBot() {
                   <Bot className="h-6 w-6 text-blue-900" />
                 )}
               </div>
-              <div className="space-y-1">
+              <div className="space-y-1 w-full">
                 <span className="block text-xs font-bold uppercase tracking-wider opacity-70">
                   {msg.sender === "user" ? "You" : "Assistant"}
                 </span>
                 <p className="text-xl leading-relaxed font-semibold">{msg.text}</p>
                 {msg.isStreaming && <span className="inline-block animate-pulse text-xl">⏳</span>}
                 
-                {/* Clickable Source Badges for Downloading/Previewing */}
+                {/* Clickable Premium Source Cards/Reference Files for Downloading/Previewing */}
                 {msg.sources && msg.sources.length > 0 && !msg.isStreaming && (
-                  <div className="mt-3 pt-3 border-t border-slate-200/50 space-y-2">
-                    <span className="block text-xs font-extrabold uppercase tracking-wider opacity-60 text-slate-500">Source Documents:</span>
-                    <div className="flex flex-wrap gap-2">
-                      {msg.sources.map((src) => (
-                        <button
-                          key={src.id}
-                          onClick={() => handleDownloadFile(src.id)}
-                          className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-100 hover:bg-slate-200 border-2 border-slate-350 text-slate-800 text-xs font-bold rounded-xl transition-colors shadow-sm"
-                        >
-                          <FileText className="h-3.5 w-3.5 text-blue-900" />
-                          <span>{src.originalName}</span>
-                        </button>
-                      ))}
-                    </div>
+                  <div className="mt-4 pt-3 border-t border-slate-200/50 space-y-3">
+                    {msg.text.toLowerCase().includes("requested document") || msg.text.toLowerCase().includes("here is") ? (
+                      <div>
+                        <span className="block text-xs font-extrabold uppercase tracking-wider opacity-60 text-slate-500 mb-2">Requested Document:</span>
+                        <div className="grid grid-cols-1 gap-3 sm:min-w-[280px]">
+                          {msg.sources.map((src) => (
+                            <div
+                              key={src.id}
+                              className="flex items-center justify-between p-3.5 bg-gradient-to-r from-blue-50 to-slate-50 border-2 border-blue-100 rounded-xl hover:border-blue-300 transition-all shadow-sm group"
+                            >
+                              <div className="flex items-center space-x-3">
+                                <div className="p-2 bg-blue-100 rounded-lg text-blue-900 group-hover:bg-blue-200 transition-colors">
+                                  <FileText className="h-6 w-6" />
+                                </div>
+                                <div className="flex flex-col">
+                                  <span className="text-sm font-bold text-slate-800 line-clamp-1 group-hover:text-blue-900 transition-colors">
+                                    {src.originalName}
+                                  </span>
+                                  <span className="text-xs font-semibold text-slate-500 uppercase">
+                                    {src.category || "Document"}
+                                  </span>
+                                </div>
+                              </div>
+                              <button
+                                onClick={() => handleDownloadFile(src.id, src.originalName)}
+                                className="px-3 py-1.5 bg-blue-900 hover:bg-blue-800 text-white text-xs font-bold rounded-lg transition-colors shadow flex items-center space-x-1 whitespace-nowrap"
+                              >
+                                <Download className="h-3.5 w-3.5" />
+                                <span>Download</span>
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="space-y-1.5">
+                        <span className="block text-xs font-extrabold uppercase tracking-wider opacity-60 text-slate-500">Reference File:</span>
+                        <div className="flex flex-wrap gap-2">
+                          {msg.sources.map((src) => (
+                            <span
+                              key={src.id}
+                              className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-slate-100 border border-slate-200 text-slate-700 text-xs font-bold rounded-lg"
+                            >
+                              <FileText className="h-3.5 w-3.5 text-blue-900" />
+                              <span>{src.originalName}</span>
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
